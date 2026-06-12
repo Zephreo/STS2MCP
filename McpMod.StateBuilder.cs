@@ -1170,6 +1170,10 @@ public static partial class McpMod
         battle["round"] = combatState.RoundNumber;
         battle["turn"] = combatState.CurrentSide.ToString().ToLower();
         battle["is_play_phase"] = IsPlayPhase(LocalContext.GetMe(runState));
+        // Scripted combat moments disable player input while turn/is_play_phase still
+        // look actionable; clients must wait on this instead of hammering errors.
+        try { battle["actions_disabled"] = CombatManager.Instance.PlayerActionsDisabled; }
+        catch { }
 
         // Enemies
         var enemies = new List<Dictionary<string, object?>>();
