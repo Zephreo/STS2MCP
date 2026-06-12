@@ -775,6 +775,21 @@ public static partial class McpMod
         if (characters.Count > 0)
             result["characters"] = characters;
 
+        // Which character the lobby will actually embark with, and whether the
+        // pending-unlock animation may still overwrite selections. Lets clients
+        // verify their pick committed before confirming (see the matching guard
+        // in the menu_select character handler).
+        try
+        {
+            if (GetInstanceFieldValue(charSelect, "_selectedButton") is NCharacterSelectButton selectedBtn &&
+                selectedBtn.Character is { } selectedCharacter)
+            {
+                result["selected_character"] = selectedCharacter.Id.Entry;
+            }
+        }
+        catch { }
+        result["selection_busy"] = IsCharacterSelectionBusy();
+
         var embarkBtn = GetInstanceFieldValue(charSelect, "_embarkButton");
         if (embarkBtn is NClickableControl embarkClickable && IsNodeVisible(embarkClickable))
         {

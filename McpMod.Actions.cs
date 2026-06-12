@@ -1651,6 +1651,13 @@ public static partial class McpMod
             return Error("Embark button not available — select a character first");
         }
 
+        // While a pending-unlock animation owns the screen, NCharacterSelectScreen.
+        // PlayUnlockCharacterAnimation will Select() the newly unlocked character
+        // ~1s after the screen opens, overwriting any selection made before it
+        // finishes. Refuse (retryable) instead of racing it.
+        if (IsCharacterSelectionBusy())
+            return Error("Character selection is busy (unlock animation in progress); retry in a moment.");
+
         var buttons = FindAll<NCharacterSelectButton>(charSelect);
         foreach (var btn in buttons)
         {
@@ -1660,11 +1667,31 @@ public static partial class McpMod
             {
                 if (btn.IsLocked)
                     return Error($"Character '{option}' is locked");
+                // NCharacterSelectButton.Select() no-ops while the button still
+                // thinks it is selected — and the unlock animation steals selection
+                // without deselecting other buttons. Clear the flag first so the
+                // full commit path always runs (delegate -> screen.SelectCharacter
+                // -> lobby.SetLocalCharacter, which is what embark reads).
+                btn.Deselect();
                 btn.Select();
                 return new Dictionary<string, object?> { ["status"] = "ok", ["message"] = $"Selected {SafeGetText(() => btn.Character.Title)}. Use 'confirm' to embark." };
             }
         }
         return Error($"Character '{option}' not found. Available: {string.Join(", ", buttons.Where(b => !b.IsLocked).Select(b => b.Character?.Id.Entry))}");
+    }
+
+    internal static bool IsCharacterSelectionBusy()
+    {
+        try
+        {
+            var progress = MegaCrit.Sts2.Core.Saves.SaveManager.Instance?.Progress;
+            return progress != null &&
+                   progress.PendingCharacterUnlock != MegaCrit.Sts2.Core.Models.ModelId.none;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static Dictionary<string, object?>? TryHandleQueuedTimelineUnlock(NTimelineScreen timelineScreen)
