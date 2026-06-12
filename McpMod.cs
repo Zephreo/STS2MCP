@@ -468,6 +468,24 @@ public static partial class McpMod
             return;
         }
 
+        // Fork additions: utility actions valid with or without a run.
+        if (action == "set_time_scale" || action == "set_ascension")
+        {
+            try
+            {
+                var resultTask = RunOnMainThread(() => action == "set_time_scale"
+                    ? ExecuteSetTimeScale(parsed)
+                    : ExecuteSetAscension(parsed));
+                var result = resultTask.GetAwaiter().GetResult();
+                SendJson(response, result);
+            }
+            catch (Exception ex)
+            {
+                SendError(response, 500, $"Action failed: {ex.Message}");
+            }
+            return;
+        }
+
         try
         {
             var resultTask = RunOnMainThread(() => ExecuteAction(action, parsed));

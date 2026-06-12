@@ -1694,6 +1694,66 @@ public static partial class McpMod
         }
     }
 
+    /// <summary>Set the Godot engine time scale (animation/game speed). Valid any time.</summary>
+    internal static Dictionary<string, object?> ExecuteSetTimeScale(Dictionary<string, JsonElement> data)
+    {
+        if (!data.TryGetValue("scale", out var scaleElem))
+            return Error("Missing 'scale'");
+        double scale;
+        try { scale = scaleElem.GetDouble(); }
+        catch { return Error("'scale' must be a number"); }
+        if (scale is < 0.25 or > 10.0)
+            return Error($"'scale' {scale} out of range (0.25 - 10.0)");
+        Godot.Engine.TimeScale = scale;
+        return new Dictionary<string, object?>
+        {
+            ["status"] = "ok",
+            ["message"] = $"Engine time scale set to {scale:0.##}x",
+            ["time_scale"] = scale
+        };
+    }
+
+    /// <summary>Set the run ascension level on the (open) character select screen.
+    /// The panel's AscensionLevelChanged signal makes the screen sync the lobby,
+    /// which is what embark reads — same path as clicking the arrows.</summary>
+    internal static Dictionary<string, object?> ExecuteSetAscension(Dictionary<string, JsonElement> data)
+    {
+        if (!data.TryGetValue("level", out var levelElem))
+            return Error("Missing 'level'");
+        int level;
+        try { level = levelElem.GetInt32(); }
+        catch { return Error("'level' must be an integer"); }
+        if (level < 0)
+            return Error("'level' must be >= 0");
+
+        var tree = Godot.Engine.GetMainLoop() as SceneTree;
+        var charSelect = tree?.Root != null ? FindFirst<NCharacterSelectScreen>(tree.Root) : null;
+        if (charSelect == null || !IsNodeVisible(charSelect))
+            return Error("Character select screen is not open");
+        if (IsCharacterSelectionBusy())
+            return Error("Character selection is busy (unlock animation in progress); retry in a moment.");
+
+        if (GetInstanceFieldValue(charSelect, "_ascensionPanel") is not NAscensionPanel panel)
+            return Error("Ascension panel not found");
+
+        int maxAscension = 0;
+        if (GetInstanceFieldValue(panel, "_maxAscension") is int max)
+            maxAscension = max;
+        if (level > maxAscension)
+            return Error(
+                $"Ascension {level} is not unlocked (max {maxAscension} for the selected " +
+                "character). Select the character first; the cap is per-character.");
+
+        panel.SetAscensionLevel(level);
+        return new Dictionary<string, object?>
+        {
+            ["status"] = "ok",
+            ["message"] = $"Ascension set to {level} (max unlocked: {maxAscension})",
+            ["ascension"] = level,
+            ["max_ascension"] = maxAscension
+        };
+    }
+
     private static Dictionary<string, object?>? TryHandleQueuedTimelineUnlock(NTimelineScreen timelineScreen)
     {
         bool isQueued;

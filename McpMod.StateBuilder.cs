@@ -790,6 +790,19 @@ public static partial class McpMod
         catch { }
         result["selection_busy"] = IsCharacterSelectionBusy();
 
+        // Ascension picker state (SP: panel becomes visible once the selected
+        // character has any ascension unlocked; max is per-character).
+        try
+        {
+            if (GetInstanceFieldValue(charSelect, "_ascensionPanel") is NAscensionPanel ascPanel)
+            {
+                result["ascension"] = ascPanel.Ascension;
+                if (GetInstanceFieldValue(ascPanel, "_maxAscension") is int maxAscension)
+                    result["max_ascension"] = maxAscension;
+            }
+        }
+        catch { }
+
         var embarkBtn = GetInstanceFieldValue(charSelect, "_embarkButton");
         if (embarkBtn is NClickableControl embarkClickable && IsNodeVisible(embarkClickable))
         {
@@ -1203,6 +1216,30 @@ public static partial class McpMod
         state["hp"] = creature.CurrentHp;
         state["max_hp"] = creature.MaxHp;
         state["block"] = creature.Block;
+
+        // Master deck (run deck, not combat piles) — needed by deck-building
+        // policies outside combat (card rewards, shop removal, upgrades).
+        try
+        {
+            var deck = new List<Dictionary<string, object?>>();
+            int deckIndex = 0;
+            foreach (var card in player.Deck.Cards)
+            {
+                deck.Add(new Dictionary<string, object?>
+                {
+                    ["index"] = deckIndex++,
+                    ["id"] = card.Id.Entry,
+                    ["name"] = SafeGetText(() => card.Title),
+                    ["type"] = card.Type.ToString(),
+                    ["cost"] = GetCostDisplay(card),
+                    ["star_cost"] = GetStarCostDisplay(card),
+                    ["rarity"] = card.Rarity.ToString(),
+                    ["is_upgraded"] = card.IsUpgraded
+                });
+            }
+            state["deck"] = deck;
+        }
+        catch { /* deck serialization must never break state */ }
 
         // PlayerCombatState can linger after combat while on map/rest/shop. Energy/MaxEnergy getters
         // run hooks (e.g. Hook.ModifyMaxEnergy) that null-ref without a live combat - only serialize
