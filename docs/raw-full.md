@@ -62,7 +62,7 @@ Always present at the top level (except `menu`). Contains everything about the l
   "draw_pile_count": 15,
   "discard_pile_count": 3,
   "exhaust_pile_count": 1,
-  "draw_pile": [ /* Pile Card Objects (sorted by rarity, matching in-game display) */ ],
+  "draw_pile": [ /* Pile Card Objects, in true order (index 0 = next draw; valid until the next shuffle event) */ ],
   "discard_pile": [ /* Pile Card Objects */ ],
   "exhaust_pile": [ /* Pile Card Objects */ ],
   "orbs": [ /* Orb Objects */ ],   // Defect only; omitted if orb capacity is 0
@@ -129,10 +129,16 @@ Always present at the top level (except `menu`). Contains everything about the l
 
 ```jsonc
 {
+  "id": "STRIKE_R",
   "name": "Strike",
+  "type": "Attack",          // Attack, Skill, Power, Status, Curse
   "cost": "1",               // Energy cost as string ("X" for X-cost)
-  "star_cost": null,          // Regent star cost as string, null if N/A
-  "description": "Deal 6 damage."
+  "star_cost": null,         // Regent star cost as string, null if N/A
+  "description": "Deal 6 damage.",
+  "rarity": "Common",
+  "is_upgraded": false,
+  "target_type": "AnyEnemy", // None, Self, AnyEnemy, AllEnemies, etc.
+  "keywords": [ /* Keyword Objects */ ]
 }
 ```
 

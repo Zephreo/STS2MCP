@@ -1072,7 +1072,7 @@ public static partial class McpMod
 
         battle["round"] = combatState.RoundNumber;
         battle["turn"] = combatState.CurrentSide.ToString().ToLower();
-        battle["is_play_phase"] = CombatManager.Instance.IsPlayPhase;
+        battle["is_play_phase"] = IsPlayPhase(LocalContext.GetMe(runState));
 
         // Enemies
         var enemies = new List<Dictionary<string, object?>>();
@@ -1085,6 +1085,26 @@ public static partial class McpMod
             }
         }
         battle["enemies"] = enemies;
+
+        // Allies (summons)
+        var allies = new List<Dictionary<string, object?>>();
+        if (combatState.Allies != null)
+        {
+            foreach (var ally in combatState.Allies)
+            {
+                if (ally.IsAlive)
+                {
+                    allies.Add(new Dictionary<string, object?>
+                    {
+                        ["name"]   = SafeGetText(() => ally.Monster?.Title) ?? ally.GetType().Name,
+                        ["hp"]     = ally.CurrentHp,
+                        ["max_hp"] = ally.MaxHp,
+                        ["block"]  = ally.Block,
+                    });
+                }
+            }
+        }
+        battle["allies"] = allies;
 
         return battle;
     }
@@ -1129,12 +1149,10 @@ public static partial class McpMod
             state["discard_pile_count"] = combatState.DiscardPile.Cards.Count;
             state["exhaust_pile_count"] = combatState.ExhaustPile.Cards.Count;
 
-            // Pile contents (draw pile sorted by rarity then card ID, matching in-game display)
-            var drawCards = combatState.DrawPile.Cards.ToList();
-            drawCards.Sort((c1, c2) => c1.Rarity != c2.Rarity
-                ? c1.Rarity.CompareTo(c2.Rarity)
-                : string.Compare(c1.Id.Entry, c2.Id.Entry, StringComparison.Ordinal));
-            state["draw_pile"] = BuildPileCardList(drawCards, PileType.Draw);
+            // Pile contents. Draw pile is serialized in true order (index 0 = next draw).
+            // Note: the order is only valid until the next shuffle event (empty-pile
+            // reshuffle or an effect that shuffles cards into the draw pile).
+            state["draw_pile"] = BuildPileCardList(combatState.DrawPile.Cards, PileType.Draw);
             state["discard_pile"] = BuildPileCardList(combatState.DiscardPile.Cards, PileType.Discard);
             state["exhaust_pile"] = BuildPileCardList(combatState.ExhaustPile.Cards, PileType.Exhaust);
 
@@ -1305,14 +1323,9 @@ public static partial class McpMod
         var list = new List<Dictionary<string, object?>>();
         foreach (var card in cards)
         {
-            // Pile cards only need a subset - keep it lightweight
-            list.Add(new Dictionary<string, object?>
-            {
-                ["name"] = SafeGetText(() => card.Title),
-                ["cost"] = GetCostDisplay(card),
-                ["star_cost"] = GetStarCostDisplay(card),
-                ["description"] = SafeGetCardDescription(card, pile)
-            });
+            var info = BuildCardInfo(card, pile);
+            info["target_type"] = card.TargetType.ToString();
+            list.Add(info);
         }
         return list;
     }
@@ -1564,7 +1577,7 @@ public static partial class McpMod
     {
         var state = new Dictionary<string, object?>();
 
-        var inventory = merchantRoom.Inventory;
+        var inventory = merchantRoom.GetLocalInventory();
         if (inventory == null)
         {
             state["items"] = new List<Dictionary<string, object?>>();

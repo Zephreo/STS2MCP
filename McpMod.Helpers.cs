@@ -16,6 +16,14 @@ namespace STS2_MCP;
 
 public static partial class McpMod
 {
+    /// <summary>
+    /// The game replaced the global CombatManager.IsPlayPhase with a per-player
+    /// turn phase (PlayerCombatState.Phase). A player can act while their own
+    /// phase is Play.
+    /// </summary>
+    internal static bool IsPlayPhase(MegaCrit.Sts2.Core.Entities.Players.Player? player) =>
+        player?.PlayerCombatState?.Phase == MegaCrit.Sts2.Core.Combat.PlayerTurnPhase.Play;
+
     private static string? SafeGetCardDescription(CardModel card, PileType pile = PileType.Hand)
     {
         try { return StripRichTextTags(card.GetDescriptionForPile(pile)).Replace("\n", " "); }
