@@ -1473,9 +1473,40 @@ Finish the Crystal Sphere minigame.
 ```jsonc
 {
   "battle": {
-    "all_players_ready": false
+    "all_players_ready": false,
     // Same shape as singleplayer (round, turn, is_play_phase, enemies).
     // Player state lives in top-level "player" (local) and "players" (all).
+
+    // Every card play this combat, ALL players (MP combat is lockstep, so
+    // the local client's history includes remote players' plays).  Appended
+    // in play order; "index" is a stable per-combat sequence number, so
+    // pollers can dedup with "index > last seen".  Cleared at combat start.
+    "card_plays": [
+      {
+        "index": 0,
+        "round": 1,
+        "player": "The Ironclad",
+        "is_local": true,
+        "card_id": "STRIKE",
+        "card_name": "Strike",
+        "target": "KIN_PRIEST"        // monster model id, player character
+                                       // title for ally-targeted cards, or
+                                       // null for untargeted cards
+      }
+    ],
+
+    // Unblocked (HP) damage dealt TO ENEMIES, per player per round.
+    // by_round[i] = damage dealt in round i+1; array length = current round.
+    // Pet damage credits the pet's owner.  Dealer-less damage (e.g. some
+    // DoTs) is not attributed and therefore not counted.
+    "player_damage": [
+      {
+        "player": "The Ironclad",
+        "is_local": true,
+        "by_round": [18, 25],
+        "total": 43
+      }
+    ]
   },
   "players": [
     {

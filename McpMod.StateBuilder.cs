@@ -476,6 +476,73 @@ public static partial class McpMod
                 ["message"] = $"An overlay ({topOverlay.GetType().Name}) is active. It may require manual interaction in-game."
             };
         }
+        else if (currentRoom is RestSiteRoom pendingRest
+                 && pendingRest.Options != null
+                 && pendingRest.Options.Any(o => o.IsEnabled))
+        {
+            // Priority over the map fallback below: after choose_map_node travels
+            // onto a rest-site node, the game updates the map model but the map
+            // SCREEN can linger visible for a while, so IsMapScreenOpenOrVisible()
+            // stays true and we'd otherwise report "map" while the rest room is
+            // actually loaded underneath (NRestSiteRoom.Instance != null). That
+            // makes the bot travel straight past the rest into the boss. An
+            // unfinished rest site (still has an enabled option) is reported as
+            // rest_site regardless of the lingering map. Once the rest is used the
+            // options disable and we fall through to "map" so the next node can be
+            // chosen. See handle_rest_site / handle_map in the bot.
+            result["state_type"] = "rest_site";
+            result["rest_site"] = BuildRestSiteState(pendingRest, runState);
+        }
+        else if (currentRoom is EventRoom pendingEvent
+                 && pendingEvent.CanonicalEvent is not FakeMerchant
+                 && EventHasPendingAction())
+        {
+            // Same lingering-map masking as the rest branch above: after travelling
+            // onto an "Unknown"/event node the map screen stays visible while the
+            // event room loads underneath (NEventRoom.Instance != null), so the
+            // mapIsOpen fallback would report "map" and the bot would travel past
+            // the event. Report "event" while the event still has an actionable
+            // choice or live dialogue; once it resolves (no pending action) we fall
+            // through to "map" so the next node can be chosen (no deadlock).
+            result["state_type"] = "event";
+            result["event"] = BuildEventState(pendingEvent, runState);
+        }
+        else if (currentRoom is TreasureRoom pendingTreasure
+                 && TreasureHasPendingAction())
+        {
+            // Same lingering-map masking as the rest/event branches above: after
+            // travelling onto a treasure node the map stays visible while the
+            // treasure room loads underneath, so the mapIsOpen fallback would
+            // report "map" and the bot would skip the chest. Report "treasure"
+            // while there is a chest still to open or a relic still to pick; once
+            // the room is finished (nothing pending) we fall through to "map".
+            result["state_type"] = "treasure";
+            result["treasure"] = BuildTreasureState(pendingTreasure, runState);
+        }
+        else if (currentRoom is MerchantRoom pendingShop
+                 && NMerchantRoom.Instance != null)
+        {
+            // Same lingering-map masking as the rest/event/treasure branches: after
+            // travelling onto a shop node the map stays visible while the merchant
+            // room loads underneath (NMerchantRoom.Instance != null with a live
+            // inventory), so the mapIsOpen fallback would report "map" and the bot
+            // would skip the shop entirely. A shop has no discrete "finished"
+            // signal, so we gate on the merchant UI singleton, which is torn down
+            // (→ null) once the player proceeds out — then we fall through to "map"
+            // for the next node. The bot leaves via a "proceed" action, so a brief
+            // redundant proceed during the exit animation is harmless (no deadlock).
+            // Mirror the normal merchant branch's auto-open of the inventory.
+            var merchUI = NMerchantRoom.Instance;
+            if (merchUI?.Inventory != null && !merchUI.Inventory.IsOpen)
+                merchUI.OpenInventory();
+            result["state_type"] = "shop";
+            var shopState = BuildShopState(pendingShop, runState);
+            // The map is still open under the mask, so its next nodes are
+            // travelable. Expose them so the bot can leave by travelling onward
+            // (the merchant ProceedButton is disabled while the map lingers).
+            shopState["next_options"] = BuildMapNextOptions();
+            result["shop"] = shopState;
+        }
         else if (mapIsOpen)
         {
             result["state_type"] = "map";
@@ -1811,6 +1878,51 @@ public static partial class McpMod
         return state;
     }
 
+    // The travelable next-node options read from the live map UI. Shared by
+    // BuildMapState and the masked-shop state (the bot leaves a masked shop by
+    // travelling to the next node, since the merchant ProceedButton isn't enabled
+    // while the map lingers over the shop).
+    private static List<Dictionary<string, object?>> BuildMapNextOptions()
+    {
+        var nextOptions = new List<Dictionary<string, object?>>();
+        var mapScreen = NMapScreen.Instance;
+        if (mapScreen == null)
+            return nextOptions;
+
+        var travelable = FindAll<NMapPoint>(mapScreen)
+            .Where(mp => mp.State == MapPointState.Travelable && mp.Point != null)
+            .OrderBy(mp => mp.Point!.coord.col)
+            .ToList();
+
+        int index = 0;
+        foreach (var nmp in travelable)
+        {
+            var pt = nmp.Point;
+            var option = new Dictionary<string, object?>
+            {
+                ["index"] = index,
+                ["col"] = pt.coord.col,
+                ["row"] = pt.coord.row,
+                ["type"] = pt.PointType.ToString()
+            };
+
+            // 1-level lookahead
+            var children = pt.Children
+                .OrderBy(c => c.coord.col)
+                .Select(c => new Dictionary<string, object?>
+                {
+                    ["col"] = c.coord.col, ["row"] = c.coord.row,
+                    ["type"] = c.PointType.ToString()
+                }).ToList();
+            if (children.Count > 0)
+                option["leads_to"] = children;
+
+            nextOptions.Add(option);
+            index++;
+        }
+        return nextOptions;
+    }
+
     private static Dictionary<string, object?> BuildMapState(RunState runState)
     {
         var state = new Dictionary<string, object?>();
@@ -1842,43 +1954,7 @@ public static partial class McpMod
         state["visited"] = visited;
 
         // Next options - read travelable state from UI nodes
-        var nextOptions = new List<Dictionary<string, object?>>();
-        var mapScreen = NMapScreen.Instance;
-        if (mapScreen != null)
-        {
-            var travelable = FindAll<NMapPoint>(mapScreen)
-                .Where(mp => mp.State == MapPointState.Travelable && mp.Point != null)
-                .OrderBy(mp => mp.Point!.coord.col)
-                .ToList();
-
-            int index = 0;
-            foreach (var nmp in travelable)
-            {
-                var pt = nmp.Point;
-                var option = new Dictionary<string, object?>
-                {
-                    ["index"] = index,
-                    ["col"] = pt.coord.col,
-                    ["row"] = pt.coord.row,
-                    ["type"] = pt.PointType.ToString()
-                };
-
-                // 1-level lookahead
-                var children = pt.Children
-                    .OrderBy(c => c.coord.col)
-                    .Select(c => new Dictionary<string, object?>
-                    {
-                        ["col"] = c.coord.col, ["row"] = c.coord.row,
-                        ["type"] = c.PointType.ToString()
-                    }).ToList();
-                if (children.Count > 0)
-                    option["leads_to"] = children;
-
-                nextOptions.Add(option);
-                index++;
-            }
-        }
-        state["next_options"] = nextOptions;
+        state["next_options"] = BuildMapNextOptions();
 
         // Full map - all nodes organized for planning
         var nodes = new List<Dictionary<string, object?>>();
@@ -2425,6 +2501,34 @@ public static partial class McpMod
         state["can_proceed"] = FindCrystalSphereProceedButton(screen) != null;
 
         return state;
+    }
+
+    // True while a treasure room is loaded and still has something to do: an
+    // unopened chest, or a relic left to pick. Side-effect-free (unlike
+    // BuildTreasureState, which auto-opens the chest) so it can safely gate the
+    // state-type decision. Used to report "treasure" over a lingering-visible map
+    // without deadlocking once the chest is opened and relics are taken.
+    private static bool TreasureHasPendingAction()
+    {
+        var treasureUI = FindFirst<NTreasureRoom>(
+            ((Godot.SceneTree)Godot.Engine.GetMainLoop()).Root);
+        if (treasureUI == null)
+            return false;
+
+        // Chest not yet opened.
+        var chestButton = treasureUI.GetNodeOrNull<NClickableControl>("Chest");
+        if (chestButton is { IsEnabled: true })
+            return true;
+
+        // A relic is still available to pick.
+        var relicCollection = treasureUI.GetNodeOrNull<NTreasureRoomRelicCollection>("%RelicCollection");
+        if (relicCollection?.Visible == true)
+        {
+            return FindAll<NTreasureRoomRelicHolder>(relicCollection)
+                .Any(h => h.IsEnabled && h.Visible);
+        }
+
+        return false;
     }
 
     private static Dictionary<string, object?> BuildTreasureState(TreasureRoom treasureRoom, RunState runState)
