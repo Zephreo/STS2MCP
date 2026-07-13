@@ -7,6 +7,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Combat.History;
 using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Context;
+using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models.Events;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
@@ -514,10 +515,14 @@ public static partial class McpMod
     {
         bool inCombat = CombatManager.Instance.IsInProgress;
         var players = new List<Dictionary<string, object?>>();
-        foreach (var player in runState.Players)
+        for (int i = 0; i < runState.Players.Count; i++)
         {
+            var player = runState.Players[i];
             var entry = new Dictionary<string, object?>
             {
+                // Stable target id for ally/player-targeting cards and potions
+                // (play_card / use_potion 'target' parameter).
+                ["entity_id"] = $"player_{i}",
                 ["character"] = SafeGetText(() => player.Character.Title),
                 ["is_local"] = LocalContext.IsMe(player),
                 ["hp"] = player.Creature.CurrentHp,
@@ -527,6 +532,7 @@ public static partial class McpMod
             };
             if (inCombat)
             {
+                entry["combat_id"] = player.Creature.CombatId;
                 entry["block"] = player.Creature.Block;
                 entry["is_ready_to_end_turn"] = CombatManager.Instance.IsPlayerReadyToEndTurn(player);
 
@@ -538,6 +544,62 @@ public static partial class McpMod
                     {
                         entry["pets"] = pets;
                     }
+
+                    // Reveal the teammate's hand + pile counts. MP combat is
+                    // lockstep — every player's PlayerCombatState is replicated
+                    // locally — so a teammate's hand cards are known client-side
+                    // even though the game UI hides them (this mirrors the
+                    // STS2-ShowPlayerHandCards mod). Use BuildCardInfo rather than
+                    // BuildCardState so we don't run CanPlay hooks against a
+                    // non-local player's card in the local combat context.
+                    try
+                    {
+                        var cs = player.PlayerCombatState;
+                        if (cs != null)
+                        {
+                            var hand = new List<Dictionary<string, object?>>();
+                            int cardIndex = 0;
+                            foreach (var card in cs.Hand.Cards)
+                            {
+                                var info = BuildCardInfo(card);
+                                info["index"] = cardIndex++;
+                                info["target_type"] = card.TargetType.ToString();
+                                hand.Add(info);
+                            }
+                            entry["hand"] = hand;
+                            entry["draw_pile_count"] = cs.DrawPile.Cards.Count;
+                            entry["discard_pile_count"] = cs.DiscardPile.Cards.Count;
+                            entry["exhaust_pile_count"] = cs.ExhaustPile.Cards.Count;
+
+                            // Full pile contents so the teammate's turn can be
+                            // forward-modelled. Draw pile is in true order
+                            // (index 0 = next draw), valid until their next
+                            // shuffle — same guarantee as the local player's.
+                            entry["draw_pile"] = BuildPileCardList(cs.DrawPile.Cards, PileType.Draw);
+                            entry["discard_pile"] = BuildPileCardList(cs.DiscardPile.Cards, PileType.Discard);
+                            entry["exhaust_pile"] = BuildPileCardList(cs.ExhaustPile.Cards, PileType.Exhaust);
+
+                            // Powers/status + orbs — also needed to model their
+                            // turn (Strength/Vulnerable scaling, Defect orbs).
+                            entry["status"] = BuildPowersState(player.Creature);
+                            AddOrbsState(entry, player);
+
+                            // Relics + potions make the teammate's turn fully
+                            // searchable (per-card play legality, potion actions).
+                            entry["relics"] = BuildRelicsList(player);
+                            AddPotionsState(entry, player);
+
+                            // Energy getters run hooks (Hook.ModifyMaxEnergy) —
+                            // isolate them so a throw still leaves the hand intact.
+                            try
+                            {
+                                entry["energy"] = cs.Energy;
+                                entry["max_energy"] = cs.MaxEnergy;
+                            }
+                            catch { /* energy hooks threw — omit energy only */ }
+                        }
+                    }
+                    catch { /* teammate combat state mid-transition — omit hand */ }
                 }
             }
             players.Add(entry);

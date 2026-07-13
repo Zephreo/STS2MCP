@@ -110,8 +110,8 @@ Example searches:
 
 | Action | Parameters | When to Use |
 |---|---|---|
-| `play_card` | `card_index`: int, `target`?: string | Play a card from hand. `target` is an `entity_id` (e.g. `"JAW_WORM_0"`), required for single-target cards. |
-| `use_potion` | `slot`: int, `target`?: string | Use a potion. `target` required for enemy-targeting potions. Works outside combat for non-combat-only potions. |
+| `play_card` | `card_index`: int, `target`?: string | Play a card from hand. `target` is an `entity_id` (e.g. `"JAW_WORM_0"`), required for `AnyEnemy` cards. MP `AnyAlly` cards take an optional teammate id (`players[].entity_id`, e.g. `"player_1"`; never self; defaults to lowest-HP living teammate). |
+| `use_potion` | `slot`: int, `target`?: string | Use a potion. `target` required for enemy-targeting potions; optional player id for `AnyPlayer` potions (defaults to self — pass a teammate id to throw it to them). Works outside combat for non-combat-only potions. |
 | `discard_potion` | `slot`: int | Discard a potion to free up the slot. Use when slots are full and you need room for incoming potions. |
 | `end_turn` | _(none)_ | End the player's turn. |
 

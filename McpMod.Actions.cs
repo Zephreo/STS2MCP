@@ -135,11 +135,40 @@ public static partial class McpMod
             if (target == null)
                 return Error($"Target '{targetId}' not found among alive enemies");
         }
-        else if (card.TargetType == TargetType.AnyAlly || card.TargetType == TargetType.AnyPlayer)
+        else if (card.TargetType == TargetType.AnyAlly)
         {
-            // In multiplayer, ally-targeting cards would open an interactive
-            // player picker if target is null. Always target self to avoid that.
-            target = player.Creature;
+            // AnyAlly = another living player, never self: the game UI excludes
+            // self from targeting and CardCmd's auto-play picks among allies
+            // != owner. (CardModel.IsValidTarget only checks Side, so a self
+            // target would slip through mechanically - but it is a play the
+            // game never allows a human to make.) A null target is rejected by
+            // IsValidTarget and silently cancels the play.
+            // Optional 'target' picks the teammate (players[].entity_id, e.g.
+            // "player_1", or a numeric combat_id); default = lowest-HP living
+            // teammate. All current AnyAlly cards are multiplayer-only.
+            if (data.TryGetValue("target", out var allyElem))
+            {
+                target = ResolvePlayerTarget(player, combatState, allyElem.GetString() ?? "");
+                if (target == player.Creature)
+                    return Error($"Card '{card.Title}' targets an ally and cannot target yourself. Valid targets: {ListAllyTargetIds(player)}");
+                if (target is { IsAlive: false })
+                    target = null;
+                // Unresolvable ids (older clients send enemy ids here) fall
+                // through to the default teammate instead of failing the play.
+            }
+            target ??= player.RunState.Players
+                .Where(p => p != player && p.Creature.IsAlive)
+                .OrderBy(p => p.Creature.CurrentHp)
+                .FirstOrDefault()?.Creature;
+            if (target == null)
+                return Error($"Card '{card.Title}' requires a living teammate to target and there is none");
+        }
+        else if (card.TargetType == TargetType.AnyPlayer)
+        {
+            // No card currently uses AnyPlayer (only potions do), and
+            // CardModel.IsValidTarget rejects ANY non-null target for it -
+            // null is the only value that lets the play execute.
+            target = null;
         }
 
         // Play the card via the action queue (same path as the game UI)
@@ -148,7 +177,7 @@ public static partial class McpMod
         return new Dictionary<string, object?>
         {
             ["status"] = "ok",
-            ["message"] = $"Playing '{card.Title}'" + (target != null ? $" targeting {SafeGetText(() => target.Monster?.Title) ?? "target"}" : "")
+            ["message"] = $"Playing '{card.Title}'" + (target != null ? $" targeting {DescribeCreature(target)}" : "")
         };
     }
 
@@ -225,9 +254,47 @@ public static partial class McpMod
                     return Error($"Target '{targetId}' not found among alive enemies");
                 break;
             case TargetType.Self:
-            case TargetType.AnyAlly:
-            case TargetType.AnyPlayer:
+                // PotionModel.IsValidTarget requires target == owner for Self
+                // (unlike cards, where Self passes no target).
                 target = player.Creature;
+                break;
+            case TargetType.AnyPlayer:
+                // Any living player, self included (PotionModel.IsValidTarget).
+                // Optional 'target' throws the potion to a teammate
+                // (players[].entity_id, e.g. "player_1", or a numeric
+                // combat_id); default = self, the pre-existing behavior.
+                if (data.TryGetValue("target", out var playerElem))
+                {
+                    string playerId = playerElem.GetString() ?? "";
+                    target = ResolvePlayerTarget(player, combatState, playerId);
+                    if (target is not { IsAlive: true })
+                        return Error($"Target '{playerId}' not found among living players");
+                }
+                else
+                    target = player.Creature;
+                break;
+            case TargetType.AnyAlly:
+                // Another living player, never self (PotionModel.IsValidTarget
+                // rejects self and the use would be silently cancelled). No
+                // such potion exists today; handled for completeness.
+                if (data.TryGetValue("target", out var allyElem))
+                {
+                    string allyId = allyElem.GetString() ?? "";
+                    target = ResolvePlayerTarget(player, combatState, allyId);
+                    if (target == player.Creature)
+                        return Error($"Potion '{SafeGetText(() => potion.Title)}' targets an ally and cannot target yourself. Valid targets: {ListAllyTargetIds(player)}");
+                    if (target is not { IsAlive: true })
+                        return Error($"Target '{allyId}' not found among living teammates");
+                }
+                else
+                {
+                    target = player.RunState.Players
+                        .Where(p => p != player && p.Creature.IsAlive)
+                        .OrderBy(p => p.Creature.CurrentHp)
+                        .FirstOrDefault()?.Creature;
+                    if (target == null)
+                        return Error($"Potion '{SafeGetText(() => potion.Title)}' requires a living teammate to target and there is none");
+                }
                 break;
             default:
                 target = null;
@@ -239,7 +306,9 @@ public static partial class McpMod
         string targetMsg = potion.TargetType switch
         {
             TargetType.AnyEnemy => $" targeting {SafeGetText(() => target?.Monster?.Title) ?? "enemy"}",
-            TargetType.Self or TargetType.AnyPlayer or TargetType.AnyAlly => " on self",
+            TargetType.Self => " on self",
+            TargetType.AnyPlayer or TargetType.AnyAlly =>
+                target == player.Creature ? " on self" : $" on {DescribeCreature(target)}",
             _ => ""
         };
 
@@ -1054,6 +1123,49 @@ public static partial class McpMod
 
         return FindAll<NProceedButton>(screen)
             .FirstOrDefault(IsControlVisibleOrActionable);
+    }
+
+    /// <summary>
+    /// Resolve a player creature from a target id: either "player_N"
+    /// (N = index in runState.Players, as exposed in players[].entity_id)
+    /// or a numeric combat_id. Returns null if the id doesn't name a player.
+    /// </summary>
+    private static Creature? ResolvePlayerTarget(Player me, ICombatState? combatState, string entityId)
+    {
+        if (uint.TryParse(entityId, out uint combatId))
+        {
+            var byId = combatState?.GetCreature(combatId);
+            return byId is { IsPlayer: true } ? byId : null;
+        }
+
+        const string prefix = "player_";
+        if (entityId.StartsWith(prefix)
+            && int.TryParse(entityId.Substring(prefix.Length), out int idx)
+            && idx >= 0 && idx < me.RunState.Players.Count)
+            return me.RunState.Players[idx].Creature;
+
+        return null;
+    }
+
+    /// <summary>Comma list of the caller's living teammates' entity ids, for error messages.</summary>
+    private static string ListAllyTargetIds(Player me)
+    {
+        var ids = me.RunState.Players
+            .Select((p, i) => (p, i))
+            .Where(t => t.p != me && t.p.Creature.IsAlive)
+            .Select(t => $"player_{t.i}")
+            .ToList();
+        return ids.Count > 0 ? string.Join(", ", ids) : "(none)";
+    }
+
+    /// <summary>Display name for a creature: monster title, player character title, or "target".</summary>
+    private static string DescribeCreature(Creature? creature)
+    {
+        if (creature == null)
+            return "target";
+        return SafeGetText(() => creature.Monster?.Title)
+               ?? SafeGetText(() => creature.Player?.Character.Title)
+               ?? "target";
     }
 
     private static Creature? ResolveTarget(ICombatState combatState, string entityId)

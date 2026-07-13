@@ -1294,36 +1294,7 @@ public static partial class McpMod
             state["exhaust_pile"] = BuildPileCardList(combatState.ExhaustPile.Cards, PileType.Exhaust);
 
             // Orbs
-            var orbQueue = combatState.OrbQueue;
-            if (orbQueue != null && orbQueue.Capacity > 0)
-            {
-                var orbs = new List<Dictionary<string, object?>>();
-                foreach (var orb in orbQueue.Orbs)
-                {
-                    // Populate SmartDescription placeholders with Focus-modified values,
-                    // mirroring OrbModel.HoverTips getter (OrbModel.cs:92-94)
-                    string? description = SafeGetText(() =>
-                    {
-                        var desc = orb.SmartDescription;
-                        desc.Add("energyPrefix", orb.Owner.Character.CardPool.Title);
-                        desc.Add("Passive", orb.PassiveVal);
-                        desc.Add("Evoke", orb.EvokeVal);
-                        return desc;
-                    });
-                    orbs.Add(new Dictionary<string, object?>
-                    {
-                        ["id"] = orb.Id.Entry,
-                        ["name"] = SafeGetText(() => orb.Title),
-                        ["description"] = description,
-                        ["passive_val"] = orb.PassiveVal,
-                        ["evoke_val"] = orb.EvokeVal,
-                        ["keywords"] = BuildHoverTips(orb.HoverTips)
-                    });
-                }
-                state["orbs"] = orbs;
-                state["orb_slots"] = orbQueue.Capacity;
-                state["orb_empty_slots"] = orbQueue.Capacity - orbQueue.Orbs.Count;
-            }
+            AddOrbsState(state, player);
 
             // Pets (Osty for Necrobinder)
             var pets = BuildPetsState(player);
@@ -1339,6 +1310,18 @@ public static partial class McpMod
         state["status"] = BuildPowersState(creature);
 
         // Relics
+        state["relics"] = BuildRelicsList(player);
+
+        // Potions
+        AddPotionsState(state, player);
+
+        return state;
+    }
+
+    // Serializes a player's relics. Shared by the local player (BuildPlayerState)
+    // and the teammate reveal (BuildAllPlayersState).
+    private static List<Dictionary<string, object?>> BuildRelicsList(Player player)
+    {
         var relics = new List<Dictionary<string, object?>>();
         foreach (var relic in player.Relics)
         {
@@ -1351,9 +1334,13 @@ public static partial class McpMod
                 ["keywords"] = BuildHoverTips(relic.HoverTipsExcludingRelic)
             });
         }
-        state["relics"] = relics;
+        return relics;
+    }
 
-        // Potions
+    // Writes "potions"/"max_potion_slots" into `state`. Shared by the local
+    // player (BuildPlayerState) and the teammate reveal (BuildAllPlayersState).
+    private static void AddPotionsState(Dictionary<string, object?> state, Player player)
+    {
         var potions = new List<Dictionary<string, object?>>();
         int slotIndex = 0;
         foreach (var potion in player.PotionSlots)
@@ -1375,8 +1362,6 @@ public static partial class McpMod
         }
         state["potions"] = potions;
         state["max_potion_slots"] = player.MaxPotionCount;
-
-        return state;
     }
 
     private static string GetCostDisplay(CardModel card)
@@ -1387,6 +1372,44 @@ public static partial class McpMod
         if (card.HasStarCostX) return "X";
         if (card.CurrentStarCost >= 0) return card.GetStarCostWithModifiers().ToString();
         return null;
+    }
+
+    // Writes "orbs"/"orb_slots"/"orb_empty_slots" into `state` for a player's
+    // orb queue (Defect). Shared by the local player (BuildPlayerState) and the
+    // teammate reveal (BuildAllPlayersState) so orb serialization stays in sync.
+    private static void AddOrbsState(Dictionary<string, object?> state, Player player)
+    {
+        var combatState = player.PlayerCombatState;
+        var orbQueue = combatState?.OrbQueue;
+        if (orbQueue == null || orbQueue.Capacity <= 0)
+            return;
+
+        var orbs = new List<Dictionary<string, object?>>();
+        foreach (var orb in orbQueue.Orbs)
+        {
+            // Populate SmartDescription placeholders with Focus-modified values,
+            // mirroring OrbModel.HoverTips getter (OrbModel.cs:92-94)
+            string? description = SafeGetText(() =>
+            {
+                var desc = orb.SmartDescription;
+                desc.Add("energyPrefix", orb.Owner.Character.CardPool.Title);
+                desc.Add("Passive", orb.PassiveVal);
+                desc.Add("Evoke", orb.EvokeVal);
+                return desc;
+            });
+            orbs.Add(new Dictionary<string, object?>
+            {
+                ["id"] = orb.Id.Entry,
+                ["name"] = SafeGetText(() => orb.Title),
+                ["description"] = description,
+                ["passive_val"] = orb.PassiveVal,
+                ["evoke_val"] = orb.EvokeVal,
+                ["keywords"] = BuildHoverTips(orb.HoverTips)
+            });
+        }
+        state["orbs"] = orbs;
+        state["orb_slots"] = orbQueue.Capacity;
+        state["orb_empty_slots"] = orbQueue.Capacity - orbQueue.Orbs.Count;
     }
 
     /// <summary>

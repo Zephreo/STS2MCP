@@ -1137,9 +1137,9 @@ Play a card from hand during combat.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `card_index` | int | Yes | 0-based index in hand |
-| `target` | string | For `AnyEnemy` cards | `entity_id` of the target enemy |
+| `target` | string | For `AnyEnemy` cards | `entity_id` of the target enemy. For `AnyAlly` cards (multiplayer-only) it is optional and names a teammate — `players[].entity_id` (e.g. `"player_1"`) or its numeric `combat_id`; self is rejected, and if omitted/unresolvable the lowest-HP living teammate is targeted. `AnyPlayer` cards ignore `target` (the engine only accepts a null target for them). |
 
-**Errors:** Not in combat, not play phase, card unplayable, invalid index, missing target.
+**Errors:** Not in combat, not play phase, card unplayable, invalid index, missing target, ally-targeting card with self as target or no living teammate.
 
 **Warning:** Playing a card removes it from hand — all higher indices shift left. Play from highest index first, or re-query state between plays.
 
@@ -1154,9 +1154,9 @@ Use a potion from the potion belt.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `slot` | int | Yes | Potion slot index |
-| `target` | string | For `AnyEnemy` potions | `entity_id` of the target enemy |
+| `target` | string | For `AnyEnemy` potions | `entity_id` of the target enemy. For `AnyPlayer` potions it is optional and may name any living player — `players[].entity_id` (e.g. `"player_1"`) or numeric `combat_id`; defaults to self (this is how you throw a potion to a teammate). `AnyAlly` potions require a teammate (never self); default is the lowest-HP living teammate. |
 
-**Errors:** Empty slot, combat-only potion used outside combat, automatic potion, already queued, player dead.
+**Errors:** Empty slot, combat-only potion used outside combat, automatic potion, already queued, player dead, unresolvable player target.
 
 ### `discard_potion`
 
@@ -1458,11 +1458,32 @@ Finish the Crystal Sphere minigame.
   "local_player_slot": 0,      // Index of local player in players array
   "players": [                  // Summary of all players
     {
+      "entity_id": "player_0",  // Target id for AnyAlly/AnyPlayer cards & potions
       "character": "The Ironclad",
       "hp": 72, "max_hp": 80,
       "gold": 99,
       "is_alive": true,
       "is_local": true
+      // In combat also: "combat_id" (numeric, also accepted as a target),
+      // "block", "is_ready_to_end_turn", teammate "pets"
+      //
+      // For TEAMMATES in combat (not the local player) the entry also carries
+      // that player's fully revealed combat state — MP combat is lockstep, so
+      // every player's combat state is replicated client-side even though the
+      // game UI hides teammate hands (cf. STS2-ShowPlayerHandCards). This is
+      // enough to forward-model a teammate's turn:
+      //   "energy", "max_energy"
+      //   "hand": [ { card info: id/name/type/cost/description/... plus
+      //              "index" and "target_type" } ]
+      //   "draw_pile" / "discard_pile" / "exhaust_pile": full card lists.
+      //      draw_pile is in true order (index 0 = next draw), valid until
+      //      that player's next shuffle — same guarantee as the local player.
+      //   "draw_pile_count", "discard_pile_count", "exhaust_pile_count"
+      //   "status": powers/debuffs (same shape as the local player's "status")
+      //   "orbs" / "orb_slots" / "orb_empty_slots": Defect orb queue, if any
+      //   "relics": same shape as the local player's "relics"
+      //   "potions" / "max_potion_slots": same shape as the local player's
+      // (omitted if the teammate's combat state is mid-transition)
     }
   ]
 }
