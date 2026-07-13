@@ -62,6 +62,8 @@ Always present at the top level (except `menu`). Contains everything about the l
   "draw_pile_count": 15,
   "discard_pile_count": 3,
   "exhaust_pile_count": 1,
+  "attacks_played_this_turn": 2,   // Attack cards this player finished playing this turn (Finisher-style counters)
+  "exhausted_this_turn": true,     // true if any of this player's cards exhausted this turn (Forgotten Ritual)
   "draw_pile": [ /* Pile Card Objects, in true order (index 0 = next draw; valid until the next shuffle event) */ ],
   "discard_pile": [ /* Pile Card Objects */ ],
   "exhaust_pile": [ /* Pile Card Objects */ ],
@@ -360,9 +362,42 @@ Run state or room type not recognized.
           {
             "type": "Attack",          // Attack, Defend, Buff, Debuff, Sleep, etc.
             "label": "11",             // Damage number or short label
+            "damage": 11,              // Attack/DeathBlow only: exact per-hit damage
+            "hits": 1,                 //   (from the intent's DamageCalc/Repeats)
+            "card_count": 2,           // StatusCard only: cards shuffled in
             "title": "Attack",         // Hover tip title
             "description": "Deals 11 damage."  // Hover tip description
           }
+        ],
+        "move_id": "SEA_KICK",         // Stable id of the current move state
+        // What the current move ACTUALLY does, statically read from the move
+        // lambda's IL (PowerCmd.Apply<XxxPower> / CreatureCmd.GainBlock /
+        // CardPileCmd.AddToCombatAndPreview<Card> callsites). "target" is
+        // "self" (the monster) or "player". "amount" may be null when the
+        // value couldn't be resolved. Omitted when the move has no such
+        // effects or the scan failed.
+        "move_effects": {
+          "applies": [ { "power": "StrengthPower", "target": "self", "amount": 2 } ],
+          "block": 5,                  // block the move grants its owner
+          "heal": 4,                   // HP the move restores
+          "status_card": "Slimed"      // card class shuffled into player piles
+        },                             //   (count = the StatusCard intent's card_count)
+        // Numeric design stats declared on the concrete monster class.
+        // Names are "<MoveIdCamelCase><Effect>" (BUBBLE -> BubbleBlock,
+        // BubbleStr), so a Buff/Defend/Heal move's real amounts are joinable
+        // from its move_id when move_effects is absent.
+        "model_stats": { "SeaKickDamage": 8, "BubbleBlock": 9, "BubbleStr": 3 },
+        // Deterministic prediction of the next few turns' moves (oldest
+        // first), re-rolled from the seeded monster-AI rng by cloning the
+        // move state machine (technique: StS2-MonsterActionPredictor).
+        // Intents have the same shape as "intents". Omitted when prediction
+        // isn't possible (stunned enemy, reflection failure). Later turns are
+        // decreasingly firm: predictions can't see in-fight events like a
+        // monster dying early or HP-threshold phase changes.
+        "future_moves": [
+          { "move_id": "BUBBLE", "intents": [ { "type": "Buff" }, { "type": "Defend" } ],
+            "effects": { "applies": [ { "power": "StrengthPower", "target": "self", "amount": 3 } ], "block": 9 } },
+          { "move_id": "SPINNING_KICK", "intents": [ { "type": "Attack", "label": "3x4", "damage": 3, "hits": 4 } ] }
         ]
       }
     ]

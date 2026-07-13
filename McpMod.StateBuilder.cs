@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -1149,6 +1151,26 @@ public static partial class McpMod
             state["discard_pile_count"] = combatState.DiscardPile.Cards.Count;
             state["exhaust_pile_count"] = combatState.ExhaustPile.Cards.Count;
 
+            // Turn-history counters for cards whose effects depend on what already
+            // happened this turn (Finisher counts attacks; Forgotten Ritual checks
+            // exhausts). Mirrors the game's own queries in those card models.
+            try
+            {
+                var history = CombatManager.Instance.History;
+                var combatStateShared = creature.CombatState;
+                state["attacks_played_this_turn"] = history.CardPlaysFinished.Count(en =>
+                    en.HappenedThisTurn(combatStateShared)
+                    && en.CardPlay.Card.Type == CardType.Attack
+                    && en.CardPlay.Card.Owner == player);
+                state["exhausted_this_turn"] = history.Entries.OfType<CardExhaustedEntry>().Any(en =>
+                    en.HappenedThisTurn(combatStateShared) && en.Card.Owner == player);
+            }
+            catch
+            {
+                // History unavailable mid-transition - omit rather than fail the
+                // whole state build; the bot treats missing keys as 0/false.
+            }
+
             // Pile contents. Draw pile is serialized in true order (index 0 = next draw).
             // Note: the order is only valid until the next shuffle event (empty-pile
             // reshuffle or an effect that shuffles cards into the draw pile).
@@ -1355,35 +1377,141 @@ public static partial class McpMod
         // Intents
         if (monster?.NextMove is MoveState moveState)
         {
-            var intents = new List<Dictionary<string, object?>>();
-            foreach (var intent in moveState.Intents)
-            {
-                var intentData = new Dictionary<string, object?>
-                {
-                    ["type"] = intent.IntentType.ToString()
-                };
-                try
-                {
-                    var targets = creature.CombatState?.PlayerCreatures;
-                    if (targets != null)
-                    {
-                        string label = intent.GetIntentLabel(targets, creature).GetFormattedText();
-                        intentData["label"] = StripRichTextTags(label);
-
-                        var hoverTip = intent.GetHoverTip(targets, creature);
-                        if (hoverTip.Title != null)
-                            intentData["title"] = StripRichTextTags(hoverTip.Title);
-                        if (hoverTip.Description != null)
-                            intentData["description"] = StripRichTextTags(hoverTip.Description);
-                    }
-                }
-                catch { /* intent label may fail for some types */ }
-                intents.Add(intentData);
-            }
-            state["intents"] = intents;
+            state["intents"] = BuildIntentList(moveState.Intents, creature);
+            state["move_id"] = moveState.Id;
+            // What the move actually does, read from its lambda's IL (see
+            // McpMod.MoveEffects.cs): which powers it applies to whom and how
+            // much, block gained, the status card class it shuffles in.
+            var moveFx = GetMoveEffects(monster, moveState);
+            if (moveFx != null)
+                state["move_effects"] = moveFx;
         }
 
+        // Numeric design stats declared on the concrete monster class
+        // (SeaKickDamage, BubbleBlock, BubbleStr, IncantationAmount, ...).
+        // Property names are the move id in CamelCase + an effect suffix, so
+        // consumers can resolve what a Buff/Defend/Heal move actually does.
+        if (monster != null)
+        {
+            var stats = BuildMonsterStats(monster);
+            if (stats != null)
+                state["model_stats"] = stats;
+        }
+
+        // Deterministic future moves (see McpMod.Prediction.cs): the next few
+        // turns' moves, re-rolled from the seeded AI rng.  Each entry carries
+        // the move id and its intents (same shape as "intents"), oldest first.
+        var futureMoves = GetPredictedMoves(creature);
+        if (futureMoves != null)
+            state["future_moves"] = futureMoves;
+
         return state;
+    }
+
+    private static readonly Dictionary<Type, PropertyInfo[]> _monsterStatProps = new();
+
+    private static Dictionary<string, object?>? BuildMonsterStats(MonsterModel monster)
+    {
+        try
+        {
+            var t = monster.GetType();
+            if (!_monsterStatProps.TryGetValue(t, out var props))
+            {
+                // NonPublic too: move-stat getters (SeaKickDamage, BubbleBlock,
+                // ...) are typically protected — only the move definitions
+                // read them.
+                props = t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic
+                                        | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                    .Where(p => p.PropertyType == typeof(int) && p.CanRead
+                                && p.GetIndexParameters().Length == 0)
+                    .ToArray();
+                _monsterStatProps[t] = props;
+            }
+            if (props.Length == 0)
+                return null;
+            var stats = new Dictionary<string, object?>();
+            foreach (var p in props)
+            {
+                try { stats[p.Name] = (int)p.GetValue(monster)!; }
+                catch { /* a getter may depend on combat state */ }
+            }
+            return stats.Count > 0 ? stats : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static List<Dictionary<string, object?>> BuildIntentList(
+        IEnumerable<AbstractIntent> moveIntents, Creature creature)
+    {
+        var intents = new List<Dictionary<string, object?>>();
+        foreach (var intent in moveIntents)
+        {
+            var intentData = new Dictionary<string, object?>
+            {
+                ["type"] = intent.IntentType.ToString()
+            };
+            // Structured effect numbers straight off the intent object —
+            // exact, no label parsing needed downstream.
+            try
+            {
+                if (intent is AttackIntent atk)
+                {
+                    var calc = atk.DamageCalc;
+                    if (calc != null)
+                        intentData["damage"] = (int)calc();
+                    intentData["hits"] = Math.Max(1, atk.Repeats);
+                }
+                else if (intent is StatusIntent status)
+                {
+                    intentData["card_count"] = status.CardCount;
+                }
+            }
+            catch { /* damage calc may fail outside combat */ }
+            try
+            {
+                var targets = creature.CombatState?.PlayerCreatures;
+                if (targets != null)
+                {
+                    string label = intent.GetIntentLabel(targets, creature).GetFormattedText();
+                    intentData["label"] = StripRichTextTags(label);
+
+                    var hoverTip = intent.GetHoverTip(targets, creature);
+                    if (hoverTip.Title != null)
+                        intentData["title"] = StripRichTextTags(hoverTip.Title);
+                    if (hoverTip.Description != null)
+                        intentData["description"] = StripRichTextTags(hoverTip.Description);
+                }
+            }
+            catch { /* intent label may fail for some types */ }
+            intents.Add(intentData);
+        }
+        return intents;
+    }
+
+    // True while an event room is loaded and still needs the player: either live
+    // dialogue to advance (ancient events) or at least one option that hasn't been
+    // chosen yet. Used to report "event" over a lingering-visible map, without
+    // deadlocking once the event has fully resolved (no buttons / all chosen).
+    private static bool EventHasPendingAction()
+    {
+        var uiRoom = NEventRoom.Instance;
+        if (uiRoom == null)
+            return false;
+
+        // Ancient-event dialogue phase (may precede any option buttons).
+        var ancientLayout = FindFirst<NAncientEventLayout>(uiRoom);
+        if (ancientLayout != null)
+        {
+            var hitbox = ancientLayout.GetNodeOrNull<NClickableControl>("%DialogueHitbox");
+            if (hitbox != null && hitbox.Visible && hitbox.IsEnabled)
+                return true;
+        }
+
+        // Any option still choosable (not already resolved).
+        return FindAll<NEventOptionButton>(uiRoom).Any(b => !b.Option.WasChosen);
     }
 
     private static Dictionary<string, object?> BuildEventState(EventRoom eventRoom, RunState runState)
