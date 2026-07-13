@@ -1229,17 +1229,9 @@ public static partial class McpMod
             int deckIndex = 0;
             foreach (var card in player.Deck.Cards)
             {
-                deck.Add(new Dictionary<string, object?>
-                {
-                    ["index"] = deckIndex++,
-                    ["id"] = card.Id.Entry,
-                    ["name"] = SafeGetText(() => card.Title),
-                    ["type"] = card.Type.ToString(),
-                    ["cost"] = GetCostDisplay(card),
-                    ["star_cost"] = GetStarCostDisplay(card),
-                    ["rarity"] = card.Rarity.ToString(),
-                    ["is_upgraded"] = card.IsUpgraded
-                });
+                var info = BuildCardInfo(card);
+                info["index"] = deckIndex++;
+                deck.Add(info);
             }
             state["deck"] = deck;
         }
