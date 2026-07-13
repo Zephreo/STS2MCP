@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Godot;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Combat.History;
+using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models.Events;
@@ -269,7 +272,7 @@ public static partial class McpMod
 
         battle["round"] = combatState.RoundNumber;
         battle["turn"] = combatState.CurrentSide.ToString().ToLower();
-        battle["is_play_phase"] = CombatManager.Instance.IsPlayPhase;
+        battle["is_play_phase"] = IsPlayPhase(LocalContext.GetMe(runState));
         battle["all_players_ready"] = CombatManager.Instance.AllPlayersReadyToEndTurn();
 
         // Enemies
@@ -282,7 +285,104 @@ public static partial class McpMod
         }
         battle["enemies"] = enemies;
 
+        // Combat history: every player's card plays + per-player damage dealt
+        // to enemies.  MP combat is lockstep (ActionQueueSynchronizer replays
+        // every peer's actions locally), so the local CombatHistory contains
+        // remote players' plays too.
+        try
+        {
+            battle["card_plays"] = BuildCardPlaysState();
+            battle["player_damage"] = BuildPlayerDamageState(runState, combatState.RoundNumber);
+        }
+        catch
+        {
+            // History unavailable (e.g. combat tearing down) — omit the fields
+        }
+
         return battle;
+    }
+
+    // CombatHistoryEntry.RoundNumber is private; read it via cached reflection.
+    private static readonly PropertyInfo? _historyRoundProp =
+        typeof(CombatHistoryEntry).GetProperty("RoundNumber",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+
+    private static int GetEntryRound(CombatHistoryEntry entry)
+    {
+        try { return _historyRoundProp?.GetValue(entry) is int r ? r : 0; }
+        catch { return 0; }
+    }
+
+    private static List<Dictionary<string, object?>> BuildCardPlaysState()
+    {
+        var plays = new List<Dictionary<string, object?>>();
+        int idx = 0;
+        foreach (var entry in CombatManager.Instance.History.CardPlaysFinished)
+        {
+            var cardPlay = entry.CardPlay;
+            string? target = null;
+            try
+            {
+                target = cardPlay.Target?.Monster?.Id.Entry
+                         ?? SafeGetText(() => cardPlay.Target?.Player?.Character.Title);
+            }
+            catch { /* target creature may be gone */ }
+
+            plays.Add(new Dictionary<string, object?>
+            {
+                // Stable per-combat sequence number — the history only appends
+                // within a fight, so pollers dedup with "index > last seen".
+                ["index"] = idx++,
+                ["round"] = GetEntryRound(entry),
+                ["player"] = SafeGetText(() => cardPlay.Card.Owner.Character.Title),
+                ["is_local"] = LocalContext.IsMe(cardPlay.Card.Owner),
+                ["card_id"] = SafeGetText(() => cardPlay.Card.Id.Entry),
+                ["card_name"] = SafeGetText(() => cardPlay.Card.Title),
+                ["target"] = target
+            });
+        }
+        return plays;
+    }
+
+    private static List<Dictionary<string, object?>> BuildPlayerDamageState(RunState runState, int currentRound)
+    {
+        // Aggregate unblocked (HP) damage dealt to enemies, per player per
+        // round.  Pet damage credits the pet's owner; unattributable sources
+        // (dealer-less DoTs) are skipped.
+        int rounds = Math.Max(1, currentRound);
+        var totals = new Dictionary<Player, int[]>();
+        foreach (var entry in CombatManager.Instance.History.Entries)
+        {
+            if (entry is not DamageReceivedEntry dmg)
+                continue;
+            if (dmg.Dealer == null || !dmg.Receiver.IsMonster)
+                continue;
+            var owner = dmg.Dealer.Player ?? dmg.Dealer.PetOwner;
+            if (owner == null)
+                continue;
+            int round = Math.Clamp(GetEntryRound(entry), 1, rounds);
+            if (!totals.TryGetValue(owner, out var byRound))
+            {
+                byRound = new int[rounds];
+                totals[owner] = byRound;
+            }
+            byRound[round - 1] += dmg.Result.UnblockedDamage;
+        }
+
+        var result = new List<Dictionary<string, object?>>();
+        foreach (var player in runState.Players)
+        {
+            totals.TryGetValue(player, out var byRound);
+            result.Add(new Dictionary<string, object?>
+            {
+                ["player"] = SafeGetText(() => player.Character.Title),
+                ["is_local"] = LocalContext.IsMe(player),
+                // by_round[i] = HP damage dealt to enemies in round i+1
+                ["by_round"] = (byRound ?? new int[rounds]).ToList(),
+                ["total"] = byRound?.Sum() ?? 0
+            });
+        }
+        return result;
     }
 
     private static Dictionary<string, object?> BuildMultiplayerMapState(RunState runState)

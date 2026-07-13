@@ -95,7 +95,7 @@ public static partial class McpMod
     {
         if (!CombatManager.Instance.IsInProgress)
             return Error("Not in combat");
-        if (!CombatManager.Instance.IsPlayPhase)
+        if (!IsPlayPhase(player))
             return Error("Not in play phase - cannot act during enemy turn");
         if (CombatManager.Instance.PlayerActionsDisabled)
             return Error("Player actions are currently disabled");
@@ -135,6 +135,12 @@ public static partial class McpMod
             if (target == null)
                 return Error($"Target '{targetId}' not found among alive enemies");
         }
+        else if (card.TargetType == TargetType.AnyAlly || card.TargetType == TargetType.AnyPlayer)
+        {
+            // In multiplayer, ally-targeting cards would open an interactive
+            // player picker if target is null. Always target self to avoid that.
+            target = player.Creature;
+        }
 
         // Play the card via the action queue (same path as the game UI)
         RunManager.Instance.ActionQueueSynchronizer.RequestEnqueue(new PlayCardAction(card, target));
@@ -150,7 +156,7 @@ public static partial class McpMod
     {
         if (!CombatManager.Instance.IsInProgress)
             return Error("Not in combat");
-        if (!CombatManager.Instance.IsPlayPhase)
+        if (!IsPlayPhase(player))
             return Error("Not in play phase - cannot act during enemy turn");
         if (CombatManager.Instance.PlayerActionsDisabled)
             return Error("Player actions are currently disabled (turn may already be ending)");
@@ -193,7 +199,7 @@ public static partial class McpMod
         {
             if (!inCombat)
                 return Error($"Potion '{SafeGetText(() => potion.Title)}' can only be used in combat");
-            if (!CombatManager.Instance.IsPlayPhase)
+            if (!IsPlayPhase(player))
                 return Error("Cannot use potions outside of play phase");
         }
         else if (potion.Usage == PotionUsage.Automatic)
@@ -362,7 +368,7 @@ public static partial class McpMod
             var merchUI = NMerchantRoom.Instance;
             if (merchUI?.Inventory != null && !merchUI.Inventory.IsOpen)
                 merchUI.OpenInventory();
-            inventory = merchantRoom.Inventory;
+            inventory = merchantRoom.GetLocalInventory();
         }
         else if (player.RunState.CurrentRoom is EventRoom eventRoom
                  && eventRoom.CanonicalEvent is FakeMerchant
@@ -1050,7 +1056,7 @@ public static partial class McpMod
             .FirstOrDefault(IsControlVisibleOrActionable);
     }
 
-    private static Creature? ResolveTarget(CombatState combatState, string entityId)
+    private static Creature? ResolveTarget(ICombatState combatState, string entityId)
     {
         // Try to match by entity_id pattern: "model_entry_N"
         // First try matching by combat_id if it's a pure number
@@ -1645,6 +1651,13 @@ public static partial class McpMod
             return Error("Embark button not available — select a character first");
         }
 
+        // While a pending-unlock animation owns the screen, NCharacterSelectScreen.
+        // PlayUnlockCharacterAnimation will Select() the newly unlocked character
+        // ~1s after the screen opens, overwriting any selection made before it
+        // finishes. Refuse (retryable) instead of racing it.
+        if (IsCharacterSelectionBusy())
+            return Error("Character selection is busy (unlock animation in progress); retry in a moment.");
+
         var buttons = FindAll<NCharacterSelectButton>(charSelect);
         foreach (var btn in buttons)
         {
@@ -1654,11 +1667,91 @@ public static partial class McpMod
             {
                 if (btn.IsLocked)
                     return Error($"Character '{option}' is locked");
+                // NCharacterSelectButton.Select() no-ops while the button still
+                // thinks it is selected — and the unlock animation steals selection
+                // without deselecting other buttons. Clear the flag first so the
+                // full commit path always runs (delegate -> screen.SelectCharacter
+                // -> lobby.SetLocalCharacter, which is what embark reads).
+                btn.Deselect();
                 btn.Select();
                 return new Dictionary<string, object?> { ["status"] = "ok", ["message"] = $"Selected {SafeGetText(() => btn.Character.Title)}. Use 'confirm' to embark." };
             }
         }
         return Error($"Character '{option}' not found. Available: {string.Join(", ", buttons.Where(b => !b.IsLocked).Select(b => b.Character?.Id.Entry))}");
+    }
+
+    internal static bool IsCharacterSelectionBusy()
+    {
+        try
+        {
+            var progress = MegaCrit.Sts2.Core.Saves.SaveManager.Instance?.Progress;
+            return progress != null &&
+                   progress.PendingCharacterUnlock != MegaCrit.Sts2.Core.Models.ModelId.none;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Set the Godot engine time scale (animation/game speed). Valid any time.</summary>
+    internal static Dictionary<string, object?> ExecuteSetTimeScale(Dictionary<string, JsonElement> data)
+    {
+        if (!data.TryGetValue("scale", out var scaleElem))
+            return Error("Missing 'scale'");
+        double scale;
+        try { scale = scaleElem.GetDouble(); }
+        catch { return Error("'scale' must be a number"); }
+        if (scale is < 0.25 or > 10.0)
+            return Error($"'scale' {scale} out of range (0.25 - 10.0)");
+        Godot.Engine.TimeScale = scale;
+        return new Dictionary<string, object?>
+        {
+            ["status"] = "ok",
+            ["message"] = $"Engine time scale set to {scale:0.##}x",
+            ["time_scale"] = scale
+        };
+    }
+
+    /// <summary>Set the run ascension level on the (open) character select screen.
+    /// The panel's AscensionLevelChanged signal makes the screen sync the lobby,
+    /// which is what embark reads — same path as clicking the arrows.</summary>
+    internal static Dictionary<string, object?> ExecuteSetAscension(Dictionary<string, JsonElement> data)
+    {
+        if (!data.TryGetValue("level", out var levelElem))
+            return Error("Missing 'level'");
+        int level;
+        try { level = levelElem.GetInt32(); }
+        catch { return Error("'level' must be an integer"); }
+        if (level < 0)
+            return Error("'level' must be >= 0");
+
+        var tree = Godot.Engine.GetMainLoop() as SceneTree;
+        var charSelect = tree?.Root != null ? FindFirst<NCharacterSelectScreen>(tree.Root) : null;
+        if (charSelect == null || !IsNodeVisible(charSelect))
+            return Error("Character select screen is not open");
+        if (IsCharacterSelectionBusy())
+            return Error("Character selection is busy (unlock animation in progress); retry in a moment.");
+
+        if (GetInstanceFieldValue(charSelect, "_ascensionPanel") is not NAscensionPanel panel)
+            return Error("Ascension panel not found");
+
+        int maxAscension = 0;
+        if (GetInstanceFieldValue(panel, "_maxAscension") is int max)
+            maxAscension = max;
+        if (level > maxAscension)
+            return Error(
+                $"Ascension {level} is not unlocked (max {maxAscension} for the selected " +
+                "character). Select the character first; the cap is per-character.");
+
+        panel.SetAscensionLevel(level);
+        return new Dictionary<string, object?>
+        {
+            ["status"] = "ok",
+            ["message"] = $"Ascension set to {level} (max unlocked: {maxAscension})",
+            ["ascension"] = level,
+            ["max_ascension"] = maxAscension
+        };
     }
 
     private static Dictionary<string, object?>? TryHandleQueuedTimelineUnlock(NTimelineScreen timelineScreen)

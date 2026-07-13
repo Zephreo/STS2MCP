@@ -62,7 +62,9 @@ Always present at the top level (except `menu`). Contains everything about the l
   "draw_pile_count": 15,
   "discard_pile_count": 3,
   "exhaust_pile_count": 1,
-  "draw_pile": [ /* Pile Card Objects (sorted by rarity, matching in-game display) */ ],
+  "attacks_played_this_turn": 2,   // Attack cards this player finished playing this turn (Finisher-style counters)
+  "exhausted_this_turn": true,     // true if any of this player's cards exhausted this turn (Forgotten Ritual)
+  "draw_pile": [ /* Pile Card Objects, in true order (index 0 = next draw; valid until the next shuffle event) */ ],
   "discard_pile": [ /* Pile Card Objects */ ],
   "exhaust_pile": [ /* Pile Card Objects */ ],
   "orbs": [ /* Orb Objects */ ],   // Defect only; omitted if orb capacity is 0
@@ -129,10 +131,16 @@ Always present at the top level (except `menu`). Contains everything about the l
 
 ```jsonc
 {
+  "id": "STRIKE_R",
   "name": "Strike",
+  "type": "Attack",          // Attack, Skill, Power, Status, Curse
   "cost": "1",               // Energy cost as string ("X" for X-cost)
-  "star_cost": null,          // Regent star cost as string, null if N/A
-  "description": "Deal 6 damage."
+  "star_cost": null,         // Regent star cost as string, null if N/A
+  "description": "Deal 6 damage.",
+  "rarity": "Common",
+  "is_upgraded": false,
+  "target_type": "AnyEnemy", // None, Self, AnyEnemy, AllEnemies, etc.
+  "keywords": [ /* Keyword Objects */ ]
 }
 ```
 
@@ -354,9 +362,42 @@ Run state or room type not recognized.
           {
             "type": "Attack",          // Attack, Defend, Buff, Debuff, Sleep, etc.
             "label": "11",             // Damage number or short label
+            "damage": 11,              // Attack/DeathBlow only: exact per-hit damage
+            "hits": 1,                 //   (from the intent's DamageCalc/Repeats)
+            "card_count": 2,           // StatusCard only: cards shuffled in
             "title": "Attack",         // Hover tip title
             "description": "Deals 11 damage."  // Hover tip description
           }
+        ],
+        "move_id": "SEA_KICK",         // Stable id of the current move state
+        // What the current move ACTUALLY does, statically read from the move
+        // lambda's IL (PowerCmd.Apply<XxxPower> / CreatureCmd.GainBlock /
+        // CardPileCmd.AddToCombatAndPreview<Card> callsites). "target" is
+        // "self" (the monster) or "player". "amount" may be null when the
+        // value couldn't be resolved. Omitted when the move has no such
+        // effects or the scan failed.
+        "move_effects": {
+          "applies": [ { "power": "StrengthPower", "target": "self", "amount": 2 } ],
+          "block": 5,                  // block the move grants its owner
+          "heal": 4,                   // HP the move restores
+          "status_card": "Slimed"      // card class shuffled into player piles
+        },                             //   (count = the StatusCard intent's card_count)
+        // Numeric design stats declared on the concrete monster class.
+        // Names are "<MoveIdCamelCase><Effect>" (BUBBLE -> BubbleBlock,
+        // BubbleStr), so a Buff/Defend/Heal move's real amounts are joinable
+        // from its move_id when move_effects is absent.
+        "model_stats": { "SeaKickDamage": 8, "BubbleBlock": 9, "BubbleStr": 3 },
+        // Deterministic prediction of the next few turns' moves (oldest
+        // first), re-rolled from the seeded monster-AI rng by cloning the
+        // move state machine (technique: StS2-MonsterActionPredictor).
+        // Intents have the same shape as "intents". Omitted when prediction
+        // isn't possible (stunned enemy, reflection failure). Later turns are
+        // decreasingly firm: predictions can't see in-fight events like a
+        // monster dying early or HP-threshold phase changes.
+        "future_moves": [
+          { "move_id": "BUBBLE", "intents": [ { "type": "Buff" }, { "type": "Defend" } ],
+            "effects": { "applies": [ { "power": "StrengthPower", "target": "self", "amount": 3 } ], "block": 9 } },
+          { "move_id": "SPINNING_KICK", "intents": [ { "type": "Attack", "label": "3x4", "damage": 3, "hits": 4 } ] }
         ]
       }
     ]
@@ -1432,9 +1473,40 @@ Finish the Crystal Sphere minigame.
 ```jsonc
 {
   "battle": {
-    "all_players_ready": false
+    "all_players_ready": false,
     // Same shape as singleplayer (round, turn, is_play_phase, enemies).
     // Player state lives in top-level "player" (local) and "players" (all).
+
+    // Every card play this combat, ALL players (MP combat is lockstep, so
+    // the local client's history includes remote players' plays).  Appended
+    // in play order; "index" is a stable per-combat sequence number, so
+    // pollers can dedup with "index > last seen".  Cleared at combat start.
+    "card_plays": [
+      {
+        "index": 0,
+        "round": 1,
+        "player": "The Ironclad",
+        "is_local": true,
+        "card_id": "STRIKE",
+        "card_name": "Strike",
+        "target": "KIN_PRIEST"        // monster model id, player character
+                                       // title for ally-targeted cards, or
+                                       // null for untargeted cards
+      }
+    ],
+
+    // Unblocked (HP) damage dealt TO ENEMIES, per player per round.
+    // by_round[i] = damage dealt in round i+1; array length = current round.
+    // Pet damage credits the pet's owner.  Dealer-less damage (e.g. some
+    // DoTs) is not attributed and therefore not counted.
+    "player_damage": [
+      {
+        "player": "The Ironclad",
+        "is_local": true,
+        "by_round": [18, 25],
+        "total": 43
+      }
+    ]
   },
   "players": [
     {

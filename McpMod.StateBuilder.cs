@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -474,6 +476,73 @@ public static partial class McpMod
                 ["message"] = $"An overlay ({topOverlay.GetType().Name}) is active. It may require manual interaction in-game."
             };
         }
+        else if (currentRoom is RestSiteRoom pendingRest
+                 && pendingRest.Options != null
+                 && pendingRest.Options.Any(o => o.IsEnabled))
+        {
+            // Priority over the map fallback below: after choose_map_node travels
+            // onto a rest-site node, the game updates the map model but the map
+            // SCREEN can linger visible for a while, so IsMapScreenOpenOrVisible()
+            // stays true and we'd otherwise report "map" while the rest room is
+            // actually loaded underneath (NRestSiteRoom.Instance != null). That
+            // makes the bot travel straight past the rest into the boss. An
+            // unfinished rest site (still has an enabled option) is reported as
+            // rest_site regardless of the lingering map. Once the rest is used the
+            // options disable and we fall through to "map" so the next node can be
+            // chosen. See handle_rest_site / handle_map in the bot.
+            result["state_type"] = "rest_site";
+            result["rest_site"] = BuildRestSiteState(pendingRest, runState);
+        }
+        else if (currentRoom is EventRoom pendingEvent
+                 && pendingEvent.CanonicalEvent is not FakeMerchant
+                 && EventHasPendingAction())
+        {
+            // Same lingering-map masking as the rest branch above: after travelling
+            // onto an "Unknown"/event node the map screen stays visible while the
+            // event room loads underneath (NEventRoom.Instance != null), so the
+            // mapIsOpen fallback would report "map" and the bot would travel past
+            // the event. Report "event" while the event still has an actionable
+            // choice or live dialogue; once it resolves (no pending action) we fall
+            // through to "map" so the next node can be chosen (no deadlock).
+            result["state_type"] = "event";
+            result["event"] = BuildEventState(pendingEvent, runState);
+        }
+        else if (currentRoom is TreasureRoom pendingTreasure
+                 && TreasureHasPendingAction())
+        {
+            // Same lingering-map masking as the rest/event branches above: after
+            // travelling onto a treasure node the map stays visible while the
+            // treasure room loads underneath, so the mapIsOpen fallback would
+            // report "map" and the bot would skip the chest. Report "treasure"
+            // while there is a chest still to open or a relic still to pick; once
+            // the room is finished (nothing pending) we fall through to "map".
+            result["state_type"] = "treasure";
+            result["treasure"] = BuildTreasureState(pendingTreasure, runState);
+        }
+        else if (currentRoom is MerchantRoom pendingShop
+                 && NMerchantRoom.Instance != null)
+        {
+            // Same lingering-map masking as the rest/event/treasure branches: after
+            // travelling onto a shop node the map stays visible while the merchant
+            // room loads underneath (NMerchantRoom.Instance != null with a live
+            // inventory), so the mapIsOpen fallback would report "map" and the bot
+            // would skip the shop entirely. A shop has no discrete "finished"
+            // signal, so we gate on the merchant UI singleton, which is torn down
+            // (→ null) once the player proceeds out — then we fall through to "map"
+            // for the next node. The bot leaves via a "proceed" action, so a brief
+            // redundant proceed during the exit animation is harmless (no deadlock).
+            // Mirror the normal merchant branch's auto-open of the inventory.
+            var merchUI = NMerchantRoom.Instance;
+            if (merchUI?.Inventory != null && !merchUI.Inventory.IsOpen)
+                merchUI.OpenInventory();
+            result["state_type"] = "shop";
+            var shopState = BuildShopState(pendingShop, runState);
+            // The map is still open under the mask, so its next nodes are
+            // travelable. Expose them so the bot can leave by travelling onward
+            // (the merchant ProceedButton is disabled while the map lingers).
+            shopState["next_options"] = BuildMapNextOptions();
+            result["shop"] = shopState;
+        }
         else if (mapIsOpen)
         {
             result["state_type"] = "map";
@@ -705,6 +774,34 @@ public static partial class McpMod
         }
         if (characters.Count > 0)
             result["characters"] = characters;
+
+        // Which character the lobby will actually embark with, and whether the
+        // pending-unlock animation may still overwrite selections. Lets clients
+        // verify their pick committed before confirming (see the matching guard
+        // in the menu_select character handler).
+        try
+        {
+            if (GetInstanceFieldValue(charSelect, "_selectedButton") is NCharacterSelectButton selectedBtn &&
+                selectedBtn.Character is { } selectedCharacter)
+            {
+                result["selected_character"] = selectedCharacter.Id.Entry;
+            }
+        }
+        catch { }
+        result["selection_busy"] = IsCharacterSelectionBusy();
+
+        // Ascension picker state (SP: panel becomes visible once the selected
+        // character has any ascension unlocked; max is per-character).
+        try
+        {
+            if (GetInstanceFieldValue(charSelect, "_ascensionPanel") is NAscensionPanel ascPanel)
+            {
+                result["ascension"] = ascPanel.Ascension;
+                if (GetInstanceFieldValue(ascPanel, "_maxAscension") is int maxAscension)
+                    result["max_ascension"] = maxAscension;
+            }
+        }
+        catch { }
 
         var embarkBtn = GetInstanceFieldValue(charSelect, "_embarkButton");
         if (embarkBtn is NClickableControl embarkClickable && IsNodeVisible(embarkClickable))
@@ -1072,7 +1169,11 @@ public static partial class McpMod
 
         battle["round"] = combatState.RoundNumber;
         battle["turn"] = combatState.CurrentSide.ToString().ToLower();
-        battle["is_play_phase"] = CombatManager.Instance.IsPlayPhase;
+        battle["is_play_phase"] = IsPlayPhase(LocalContext.GetMe(runState));
+        // Scripted combat moments disable player input while turn/is_play_phase still
+        // look actionable; clients must wait on this instead of hammering errors.
+        try { battle["actions_disabled"] = CombatManager.Instance.PlayerActionsDisabled; }
+        catch { }
 
         // Enemies
         var enemies = new List<Dictionary<string, object?>>();
@@ -1085,6 +1186,26 @@ public static partial class McpMod
             }
         }
         battle["enemies"] = enemies;
+
+        // Allies (summons)
+        var allies = new List<Dictionary<string, object?>>();
+        if (combatState.Allies != null)
+        {
+            foreach (var ally in combatState.Allies)
+            {
+                if (ally.IsAlive)
+                {
+                    allies.Add(new Dictionary<string, object?>
+                    {
+                        ["name"]   = SafeGetText(() => ally.Monster?.Title) ?? ally.GetType().Name,
+                        ["hp"]     = ally.CurrentHp,
+                        ["max_hp"] = ally.MaxHp,
+                        ["block"]  = ally.Block,
+                    });
+                }
+            }
+        }
+        battle["allies"] = allies;
 
         return battle;
     }
@@ -1099,6 +1220,22 @@ public static partial class McpMod
         state["hp"] = creature.CurrentHp;
         state["max_hp"] = creature.MaxHp;
         state["block"] = creature.Block;
+
+        // Master deck (run deck, not combat piles) — needed by deck-building
+        // policies outside combat (card rewards, shop removal, upgrades).
+        try
+        {
+            var deck = new List<Dictionary<string, object?>>();
+            int deckIndex = 0;
+            foreach (var card in player.Deck.Cards)
+            {
+                var info = BuildCardInfo(card);
+                info["index"] = deckIndex++;
+                deck.Add(info);
+            }
+            state["deck"] = deck;
+        }
+        catch { /* deck serialization must never break state */ }
 
         // PlayerCombatState can linger after combat while on map/rest/shop. Energy/MaxEnergy getters
         // run hooks (e.g. Hook.ModifyMaxEnergy) that null-ref without a live combat - only serialize
@@ -1129,12 +1266,30 @@ public static partial class McpMod
             state["discard_pile_count"] = combatState.DiscardPile.Cards.Count;
             state["exhaust_pile_count"] = combatState.ExhaustPile.Cards.Count;
 
-            // Pile contents (draw pile sorted by rarity then card ID, matching in-game display)
-            var drawCards = combatState.DrawPile.Cards.ToList();
-            drawCards.Sort((c1, c2) => c1.Rarity != c2.Rarity
-                ? c1.Rarity.CompareTo(c2.Rarity)
-                : string.Compare(c1.Id.Entry, c2.Id.Entry, StringComparison.Ordinal));
-            state["draw_pile"] = BuildPileCardList(drawCards, PileType.Draw);
+            // Turn-history counters for cards whose effects depend on what already
+            // happened this turn (Finisher counts attacks; Forgotten Ritual checks
+            // exhausts). Mirrors the game's own queries in those card models.
+            try
+            {
+                var history = CombatManager.Instance.History;
+                var combatStateShared = creature.CombatState;
+                state["attacks_played_this_turn"] = history.CardPlaysFinished.Count(en =>
+                    en.HappenedThisTurn(combatStateShared)
+                    && en.CardPlay.Card.Type == CardType.Attack
+                    && en.CardPlay.Card.Owner == player);
+                state["exhausted_this_turn"] = history.Entries.OfType<CardExhaustedEntry>().Any(en =>
+                    en.HappenedThisTurn(combatStateShared) && en.Card.Owner == player);
+            }
+            catch
+            {
+                // History unavailable mid-transition - omit rather than fail the
+                // whole state build; the bot treats missing keys as 0/false.
+            }
+
+            // Pile contents. Draw pile is serialized in true order (index 0 = next draw).
+            // Note: the order is only valid until the next shuffle event (empty-pile
+            // reshuffle or an effect that shuffles cards into the draw pile).
+            state["draw_pile"] = BuildPileCardList(combatState.DrawPile.Cards, PileType.Draw);
             state["discard_pile"] = BuildPileCardList(combatState.DiscardPile.Cards, PileType.Discard);
             state["exhaust_pile"] = BuildPileCardList(combatState.ExhaustPile.Cards, PileType.Exhaust);
 
@@ -1305,14 +1460,9 @@ public static partial class McpMod
         var list = new List<Dictionary<string, object?>>();
         foreach (var card in cards)
         {
-            // Pile cards only need a subset - keep it lightweight
-            list.Add(new Dictionary<string, object?>
-            {
-                ["name"] = SafeGetText(() => card.Title),
-                ["cost"] = GetCostDisplay(card),
-                ["star_cost"] = GetStarCostDisplay(card),
-                ["description"] = SafeGetCardDescription(card, pile)
-            });
+            var info = BuildCardInfo(card, pile);
+            info["target_type"] = card.TargetType.ToString();
+            list.Add(info);
         }
         return list;
     }
@@ -1342,35 +1492,141 @@ public static partial class McpMod
         // Intents
         if (monster?.NextMove is MoveState moveState)
         {
-            var intents = new List<Dictionary<string, object?>>();
-            foreach (var intent in moveState.Intents)
-            {
-                var intentData = new Dictionary<string, object?>
-                {
-                    ["type"] = intent.IntentType.ToString()
-                };
-                try
-                {
-                    var targets = creature.CombatState?.PlayerCreatures;
-                    if (targets != null)
-                    {
-                        string label = intent.GetIntentLabel(targets, creature).GetFormattedText();
-                        intentData["label"] = StripRichTextTags(label);
-
-                        var hoverTip = intent.GetHoverTip(targets, creature);
-                        if (hoverTip.Title != null)
-                            intentData["title"] = StripRichTextTags(hoverTip.Title);
-                        if (hoverTip.Description != null)
-                            intentData["description"] = StripRichTextTags(hoverTip.Description);
-                    }
-                }
-                catch { /* intent label may fail for some types */ }
-                intents.Add(intentData);
-            }
-            state["intents"] = intents;
+            state["intents"] = BuildIntentList(moveState.Intents, creature);
+            state["move_id"] = moveState.Id;
+            // What the move actually does, read from its lambda's IL (see
+            // McpMod.MoveEffects.cs): which powers it applies to whom and how
+            // much, block gained, the status card class it shuffles in.
+            var moveFx = GetMoveEffects(monster, moveState);
+            if (moveFx != null)
+                state["move_effects"] = moveFx;
         }
 
+        // Numeric design stats declared on the concrete monster class
+        // (SeaKickDamage, BubbleBlock, BubbleStr, IncantationAmount, ...).
+        // Property names are the move id in CamelCase + an effect suffix, so
+        // consumers can resolve what a Buff/Defend/Heal move actually does.
+        if (monster != null)
+        {
+            var stats = BuildMonsterStats(monster);
+            if (stats != null)
+                state["model_stats"] = stats;
+        }
+
+        // Deterministic future moves (see McpMod.Prediction.cs): the next few
+        // turns' moves, re-rolled from the seeded AI rng.  Each entry carries
+        // the move id and its intents (same shape as "intents"), oldest first.
+        var futureMoves = GetPredictedMoves(creature);
+        if (futureMoves != null)
+            state["future_moves"] = futureMoves;
+
         return state;
+    }
+
+    private static readonly Dictionary<Type, PropertyInfo[]> _monsterStatProps = new();
+
+    private static Dictionary<string, object?>? BuildMonsterStats(MonsterModel monster)
+    {
+        try
+        {
+            var t = monster.GetType();
+            if (!_monsterStatProps.TryGetValue(t, out var props))
+            {
+                // NonPublic too: move-stat getters (SeaKickDamage, BubbleBlock,
+                // ...) are typically protected — only the move definitions
+                // read them.
+                props = t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic
+                                        | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                    .Where(p => p.PropertyType == typeof(int) && p.CanRead
+                                && p.GetIndexParameters().Length == 0)
+                    .ToArray();
+                _monsterStatProps[t] = props;
+            }
+            if (props.Length == 0)
+                return null;
+            var stats = new Dictionary<string, object?>();
+            foreach (var p in props)
+            {
+                try { stats[p.Name] = (int)p.GetValue(monster)!; }
+                catch { /* a getter may depend on combat state */ }
+            }
+            return stats.Count > 0 ? stats : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static List<Dictionary<string, object?>> BuildIntentList(
+        IEnumerable<AbstractIntent> moveIntents, Creature creature)
+    {
+        var intents = new List<Dictionary<string, object?>>();
+        foreach (var intent in moveIntents)
+        {
+            var intentData = new Dictionary<string, object?>
+            {
+                ["type"] = intent.IntentType.ToString()
+            };
+            // Structured effect numbers straight off the intent object —
+            // exact, no label parsing needed downstream.
+            try
+            {
+                if (intent is AttackIntent atk)
+                {
+                    var calc = atk.DamageCalc;
+                    if (calc != null)
+                        intentData["damage"] = (int)calc();
+                    intentData["hits"] = Math.Max(1, atk.Repeats);
+                }
+                else if (intent is StatusIntent status)
+                {
+                    intentData["card_count"] = status.CardCount;
+                }
+            }
+            catch { /* damage calc may fail outside combat */ }
+            try
+            {
+                var targets = creature.CombatState?.PlayerCreatures;
+                if (targets != null)
+                {
+                    string label = intent.GetIntentLabel(targets, creature).GetFormattedText();
+                    intentData["label"] = StripRichTextTags(label);
+
+                    var hoverTip = intent.GetHoverTip(targets, creature);
+                    if (hoverTip.Title != null)
+                        intentData["title"] = StripRichTextTags(hoverTip.Title);
+                    if (hoverTip.Description != null)
+                        intentData["description"] = StripRichTextTags(hoverTip.Description);
+                }
+            }
+            catch { /* intent label may fail for some types */ }
+            intents.Add(intentData);
+        }
+        return intents;
+    }
+
+    // True while an event room is loaded and still needs the player: either live
+    // dialogue to advance (ancient events) or at least one option that hasn't been
+    // chosen yet. Used to report "event" over a lingering-visible map, without
+    // deadlocking once the event has fully resolved (no buttons / all chosen).
+    private static bool EventHasPendingAction()
+    {
+        var uiRoom = NEventRoom.Instance;
+        if (uiRoom == null)
+            return false;
+
+        // Ancient-event dialogue phase (may precede any option buttons).
+        var ancientLayout = FindFirst<NAncientEventLayout>(uiRoom);
+        if (ancientLayout != null)
+        {
+            var hitbox = ancientLayout.GetNodeOrNull<NClickableControl>("%DialogueHitbox");
+            if (hitbox != null && hitbox.Visible && hitbox.IsEnabled)
+                return true;
+        }
+
+        // Any option still choosable (not already resolved).
+        return FindAll<NEventOptionButton>(uiRoom).Any(b => !b.Option.WasChosen);
     }
 
     private static Dictionary<string, object?> BuildEventState(EventRoom eventRoom, RunState runState)
@@ -1564,7 +1820,7 @@ public static partial class McpMod
     {
         var state = new Dictionary<string, object?>();
 
-        var inventory = merchantRoom.Inventory;
+        var inventory = merchantRoom.GetLocalInventory();
         if (inventory == null)
         {
             state["items"] = new List<Dictionary<string, object?>>();
@@ -1670,6 +1926,51 @@ public static partial class McpMod
         return state;
     }
 
+    // The travelable next-node options read from the live map UI. Shared by
+    // BuildMapState and the masked-shop state (the bot leaves a masked shop by
+    // travelling to the next node, since the merchant ProceedButton isn't enabled
+    // while the map lingers over the shop).
+    private static List<Dictionary<string, object?>> BuildMapNextOptions()
+    {
+        var nextOptions = new List<Dictionary<string, object?>>();
+        var mapScreen = NMapScreen.Instance;
+        if (mapScreen == null)
+            return nextOptions;
+
+        var travelable = FindAll<NMapPoint>(mapScreen)
+            .Where(mp => mp.State == MapPointState.Travelable && mp.Point != null)
+            .OrderBy(mp => mp.Point!.coord.col)
+            .ToList();
+
+        int index = 0;
+        foreach (var nmp in travelable)
+        {
+            var pt = nmp.Point;
+            var option = new Dictionary<string, object?>
+            {
+                ["index"] = index,
+                ["col"] = pt.coord.col,
+                ["row"] = pt.coord.row,
+                ["type"] = pt.PointType.ToString()
+            };
+
+            // 1-level lookahead
+            var children = pt.Children
+                .OrderBy(c => c.coord.col)
+                .Select(c => new Dictionary<string, object?>
+                {
+                    ["col"] = c.coord.col, ["row"] = c.coord.row,
+                    ["type"] = c.PointType.ToString()
+                }).ToList();
+            if (children.Count > 0)
+                option["leads_to"] = children;
+
+            nextOptions.Add(option);
+            index++;
+        }
+        return nextOptions;
+    }
+
     private static Dictionary<string, object?> BuildMapState(RunState runState)
     {
         var state = new Dictionary<string, object?>();
@@ -1701,43 +2002,7 @@ public static partial class McpMod
         state["visited"] = visited;
 
         // Next options - read travelable state from UI nodes
-        var nextOptions = new List<Dictionary<string, object?>>();
-        var mapScreen = NMapScreen.Instance;
-        if (mapScreen != null)
-        {
-            var travelable = FindAll<NMapPoint>(mapScreen)
-                .Where(mp => mp.State == MapPointState.Travelable && mp.Point != null)
-                .OrderBy(mp => mp.Point!.coord.col)
-                .ToList();
-
-            int index = 0;
-            foreach (var nmp in travelable)
-            {
-                var pt = nmp.Point;
-                var option = new Dictionary<string, object?>
-                {
-                    ["index"] = index,
-                    ["col"] = pt.coord.col,
-                    ["row"] = pt.coord.row,
-                    ["type"] = pt.PointType.ToString()
-                };
-
-                // 1-level lookahead
-                var children = pt.Children
-                    .OrderBy(c => c.coord.col)
-                    .Select(c => new Dictionary<string, object?>
-                    {
-                        ["col"] = c.coord.col, ["row"] = c.coord.row,
-                        ["type"] = c.PointType.ToString()
-                    }).ToList();
-                if (children.Count > 0)
-                    option["leads_to"] = children;
-
-                nextOptions.Add(option);
-                index++;
-            }
-        }
-        state["next_options"] = nextOptions;
+        state["next_options"] = BuildMapNextOptions();
 
         // Full map - all nodes organized for planning
         var nodes = new List<Dictionary<string, object?>>();
@@ -2284,6 +2549,34 @@ public static partial class McpMod
         state["can_proceed"] = FindCrystalSphereProceedButton(screen) != null;
 
         return state;
+    }
+
+    // True while a treasure room is loaded and still has something to do: an
+    // unopened chest, or a relic left to pick. Side-effect-free (unlike
+    // BuildTreasureState, which auto-opens the chest) so it can safely gate the
+    // state-type decision. Used to report "treasure" over a lingering-visible map
+    // without deadlocking once the chest is opened and relics are taken.
+    private static bool TreasureHasPendingAction()
+    {
+        var treasureUI = FindFirst<NTreasureRoom>(
+            ((Godot.SceneTree)Godot.Engine.GetMainLoop()).Root);
+        if (treasureUI == null)
+            return false;
+
+        // Chest not yet opened.
+        var chestButton = treasureUI.GetNodeOrNull<NClickableControl>("Chest");
+        if (chestButton is { IsEnabled: true })
+            return true;
+
+        // A relic is still available to pick.
+        var relicCollection = treasureUI.GetNodeOrNull<NTreasureRoomRelicCollection>("%RelicCollection");
+        if (relicCollection?.Visible == true)
+        {
+            return FindAll<NTreasureRoomRelicHolder>(relicCollection)
+                .Any(h => h.IsEnabled && h.Visible);
+        }
+
+        return false;
     }
 
     private static Dictionary<string, object?> BuildTreasureState(TreasureRoom treasureRoom, RunState runState)

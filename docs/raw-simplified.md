@@ -211,3 +211,12 @@ Example searches:
 |---|---|---|
 | `end_turn` | _(none)_ | Vote to end turn. Turn ends when all players vote. |
 | `undo_end_turn` | _(none)_ | Retract end-turn vote (before all players committed). |
+
+MP battle state additionally exposes the full combat history for ALL players
+(lockstep sync makes remote plays visible locally):
+
+- `battle.card_plays` — every card play this combat: `index` (stable
+  per-combat sequence for polling dedup), `round`, `player`, `is_local`,
+  `card_id`, `card_name`, `target`.
+- `battle.player_damage` — per player: `by_round` (unblocked HP damage dealt
+  to enemies per round, index 0 = round 1) and `total`.
