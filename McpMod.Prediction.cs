@@ -1,69 +1,89 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
-using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Creatures;
-using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
-using MegaCrit.Sts2.Core.Random;
 
 namespace STS2_MCP;
 
 public static partial class McpMod
 {
-    // Future-move prediction (technique from aoyamaY/StS2-MonsterActionPredictor).
+    // Monster intent state-machine export.
     //
-    // The enemy AI rng is a seeded counter stream (monster.RunRng.MonsterAi), so
-    // upcoming moves are deterministic: clone each monster's move state machine
-    // and re-roll it with Rng(seed, current counter).  Unlike the original mod
-    // (which rolls each monster independently from the same counter), the rolls
-    // are simulated jointly — every living enemy, in combatState.Enemies order,
-    // sharing one rng — because the stream is shared and the game rolls enemies
-    // sequentially at each turn boundary.  Predictions ignore in-fight events
-    // the machine can't see from here (a monster dying early, stuns, HP-phase
-    // transitions), so consumers should treat later turns as decreasingly firm.
-
-    private const int FutureMovePredictionTurns = 3;
+    // The game keeps the graph topology on MonsterMoveStateMachine, while its
+    // current cursor and initial node are private fields. Random branches also
+    // carry the repeat/cooldown rules that consult StateLog. Export all of that
+    // state so a consumer can advance the machine for an unbounded number of
+    // turns with the shared MonsterAi RNG rather than receiving a short,
+    // pre-rolled future_moves queue.
+    //
+    // Conditional branches contain Func<bool> closures into live game objects.
+    // Known game predicates are normalized into a small expression language
+    // that Rust can re-evaluate against hypothetical combat state. Unknown
+    // modded predicates retain their current result as an explicit snapshot.
 
     private static readonly FieldInfo? _msmCurrentStateField =
         typeof(MonsterMoveStateMachine).GetField("_currentState", BindingFlags.NonPublic | BindingFlags.Instance);
     private static readonly FieldInfo? _msmInitialStateField =
         typeof(MonsterMoveStateMachine).GetField("_initialState", BindingFlags.NonPublic | BindingFlags.Instance);
-    private static readonly FieldInfo? _msmPerformedFirstMoveField =
-        typeof(MonsterMoveStateMachine).GetField("_performedFirstMove", BindingFlags.NonPublic | BindingFlags.Instance);
-    private static readonly FieldInfo? _movePerformedAtLeastOnceField =
-        typeof(MoveState).GetField("_performedAtLeastOnce", BindingFlags.NonPublic | BindingFlags.Instance);
-    private static readonly MethodInfo? _memberwiseCloneMethod =
-        typeof(object).GetMethod("MemberwiseClone", BindingFlags.NonPublic | BindingFlags.Instance);
+    private static readonly PropertyInfo? _conditionalStatesProperty =
+        typeof(ConditionalBranchState).GetProperty("States", BindingFlags.NonPublic | BindingFlags.Instance);
 
-    // Cache: predictions only change when the AI rng counter or round advances.
-    private static long _predCacheCounter = long.MinValue;
-    private static long _predCacheRound = long.MinValue;
-    private static readonly Dictionary<Creature, List<Dictionary<string, object?>>> _predCache = new();
-
-    /// <summary>Predicted moves for this enemy's next few turns, oldest first.
-    /// Each entry: { "move_id": ..., "intents": [same shape as live "intents"] }.
-    /// Null when prediction isn't possible (stunned, no machine, reflection
-    /// failure).</summary>
-    private static List<Dictionary<string, object?>>? GetPredictedMoves(Creature creature)
+    /// <summary>
+    /// Builds the complete intent machine for one enemy.
+    /// </summary>
+    private static Dictionary<string, object?>? BuildIntentMachine(Creature creature)
     {
         try
         {
             var monster = creature.Monster;
-            var combatState = creature.CombatState;
-            if (monster?.MoveStateMachine == null || combatState == null)
+            var machine = monster?.MoveStateMachine;
+            var current = _msmCurrentStateField?.GetValue(machine) as MonsterState;
+            var initial = _msmInitialStateField?.GetValue(machine) as MonsterState;
+            if (monster == null || machine == null || current == null || initial == null)
                 return null;
 
-            var counter = monster.RunRng.MonsterAi.Counter;
-            var round = combatState.RoundNumber;
-            if (counter != _predCacheCounter || round != _predCacheRound)
+            var states = new List<Dictionary<string, object?>>();
+            bool hasConditionalSnapshots = false;
+            foreach (var state in machine.States.Values)
             {
-                RebuildPredictions(combatState, counter);
-                _predCacheCounter = counter;
-                _predCacheRound = round;
+                Dictionary<string, object?>? serialized = state switch
+                {
+                    MoveState move => BuildMoveMachineState(monster, creature, move),
+                    RandomBranchState random => BuildRandomMachineState(random),
+                    ConditionalBranchState conditional =>
+                        BuildConditionalMachineState(monster, conditional, ref hasConditionalSnapshots),
+                    _ => null,
+                };
+                if (serialized == null)
+                    continue;
+                states.Add(serialized);
             }
-            return _predCache.TryGetValue(creature, out var moves) && moves.Count > 0 ? moves : null;
+
+            if (states.Count == 0)
+                return null;
+
+            var rng = monster.RunRng.MonsterAi;
+            var stateLog = new List<string>(machine.StateLog.Count);
+            foreach (var logged in machine.StateLog)
+                stateLog.Add(logged.Id);
+
+            return new Dictionary<string, object?>
+            {
+                ["initial_state"] = initial.Id,
+                ["current_state"] = current.Id,
+                ["state_log"] = stateLog,
+                ["rng_seed"] = rng.Seed,
+                ["rng_counter"] = rng.Counter,
+                ["conditional_values_are_snapshots"] = hasConditionalSnapshots,
+                // Two-Tailed Rat is the shipped machine whose branch weights
+                // depend on mutable CanSummon state. Other shipped lambdas are
+                // constants; modded dynamic lambdas cannot be distinguished
+                // generically from constants by reflection.
+                ["random_weights_are_snapshots"] = monster.GetType().Name == "TwoTailedRat",
+                ["states"] = states,
+            };
         }
         catch
         {
@@ -71,103 +91,157 @@ public static partial class McpMod
         }
     }
 
-    private static void RebuildPredictions(ICombatState combatState, int counter)
+    private static Dictionary<string, object?> BuildMoveMachineState(
+        MegaCrit.Sts2.Core.Models.MonsterModel monster,
+        Creature creature,
+        MoveState move)
     {
-        _predCache.Clear();
-
-        // Clone every living enemy's machine up front; roll them jointly below.
-        var rollOrder = new List<Creature>();
-        var machines = new Dictionary<Creature, MonsterMoveStateMachine>();
-        foreach (var enemy in combatState.Enemies)
+        var state = new Dictionary<string, object?>
         {
-            var m = enemy.Monster;
-            if (!enemy.IsAlive || m?.MoveStateMachine == null)
-                continue;
-            var current = _msmCurrentStateField?.GetValue(m.MoveStateMachine) as MonsterState;
-            if (current == null || current.Id == "STUNNED")
-                continue;
-            var clone = CloneStateMachine(m.MoveStateMachine);
-            if (clone == null)
-                continue;
-            _msmPerformedFirstMoveField?.SetValue(clone, true);
-            rollOrder.Add(enemy);
-            machines[enemy] = clone;
-            _predCache[enemy] = new List<Dictionary<string, object?>>();
-        }
-        if (rollOrder.Count == 0)
-            return;
-
-        var seedMonster = rollOrder[0].Monster!;
-        var rng = new Rng(seedMonster.RunRng.MonsterAi.Seed, counter);
-        var targets = combatState.PlayerCreatures;
-
-        for (int turn = 0; turn < FutureMovePredictionTurns; turn++)
-        {
-            foreach (var enemy in rollOrder)
-            {
-                try
-                {
-                    var move = machines[enemy].RollMove(targets, enemy, rng);
-                    if (move == null)
-                        continue;
-                    if (move.MustPerformOnceBeforeTransitioning)
-                        _movePerformedAtLeastOnceField?.SetValue(move, true);
-                    var entry = new Dictionary<string, object?>
-                    {
-                        ["move_id"] = move.Id,
-                        ["intents"] = BuildIntentList(move.Intents, enemy),
-                    };
-                    var fx = GetMoveEffects(enemy.Monster!, move);
-                    if (fx != null)
-                        entry["effects"] = fx;
-                    _predCache[enemy].Add(entry);
-                }
-                catch
-                {
-                    // One enemy failing (unexpected machine shape) shouldn't
-                    // sink the others; but its rng draws are unknown from here,
-                    // so everyone's later turns are misaligned — stop rolling.
-                    return;
-                }
-            }
-        }
+            ["id"] = move.Id,
+            ["kind"] = "move",
+            ["follow_up"] = move.FollowUpState?.Id ?? move.FollowUpStateId,
+            ["intents"] = BuildIntentList(move.Intents, creature),
+        };
+        var effects = GetMoveEffects(monster, move);
+        if (effects != null)
+            state["effects"] = effects;
+        return state;
     }
 
-    private static MonsterMoveStateMachine? CloneStateMachine(MonsterMoveStateMachine original)
+    private static Dictionary<string, object?> BuildRandomMachineState(RandomBranchState random)
     {
-        if (_msmCurrentStateField == null || _msmInitialStateField == null ||
-            _msmPerformedFirstMoveField == null || _memberwiseCloneMethod == null)
-            return null;
-
-        var clonedStates = new List<MonsterState>();
-        foreach (var state in original.States.Values)
-            clonedStates.Add((MonsterState)_memberwiseCloneMethod.Invoke(state, null)!);
-
-        var originalInitial = (MonsterState)_msmInitialStateField.GetValue(original)!;
-        var clonedInitial = clonedStates.First(s => s.Id == originalInitial.Id);
-
-        var ctor = typeof(MonsterMoveStateMachine).GetConstructor(
-            new[] { typeof(IEnumerable<MonsterState>), typeof(MonsterState) });
-        if (ctor == null)
-            return null;
-        var clone = (MonsterMoveStateMachine)ctor.Invoke(new object[] { clonedStates, clonedInitial });
-
-        var originalCurrent = (MonsterState)_msmCurrentStateField.GetValue(original)!;
-        _msmCurrentStateField.SetValue(clone, clone.States[originalCurrent.Id]);
-        _msmPerformedFirstMoveField.SetValue(clone, (bool)_msmPerformedFirstMoveField.GetValue(original)!);
-
-        // Re-point follow-up references at the cloned states (the shallow copy
-        // still points at the live machine's states).
-        var followUpProp = typeof(MoveState).GetProperty("FollowUpState");
-        foreach (var state in clone.States.Values)
+        var branches = new List<Dictionary<string, object?>>(random.States.Count);
+        foreach (var branch in random.States)
         {
-            if (state is MoveState moveState && moveState.FollowUpStateId != null &&
-                clone.States.TryGetValue(moveState.FollowUpStateId, out var followUp))
+            float weight;
+            try { weight = branch.GetWeight(); }
+            catch { weight = 0f; }
+            branches.Add(new Dictionary<string, object?>
             {
-                followUpProp?.SetValue(moveState, followUp);
+                ["state"] = branch.stateId,
+                ["weight"] = weight,
+                ["repeat"] = branch.repeatType.ToString(),
+                ["max_repeats"] = branch.maxTimes,
+                ["cooldown"] = branch.cooldown,
+            });
+        }
+        return new Dictionary<string, object?>
+        {
+            ["id"] = random.Id,
+            ["kind"] = "random",
+            ["branches"] = branches,
+        };
+    }
+
+    private static Dictionary<string, object?> BuildConditionalMachineState(
+        MegaCrit.Sts2.Core.Models.MonsterModel monster,
+        ConditionalBranchState conditional,
+        ref bool hasSnapshots)
+    {
+        var branches = new List<Dictionary<string, object?>>();
+        if (_conditionalStatesProperty?.GetValue(conditional) is IEnumerable values)
+        {
+            foreach (var value in values)
+            {
+                var valueType = value.GetType();
+                var id = valueType.GetField("id", BindingFlags.Public | BindingFlags.Instance)?.GetValue(value) as string;
+                var evaluate = valueType.GetMethod("Evaluate", BindingFlags.Public | BindingFlags.Instance);
+                if (id == null || evaluate == null)
+                    continue;
+                bool enabled;
+                try { enabled = Convert.ToSingle(evaluate.Invoke(value, null)) > 0f; }
+                catch { enabled = false; }
+                var condition = BuildCondition(monster, conditional.Id, id, enabled, out bool isSnapshot);
+                hasSnapshots |= isSnapshot;
+                branches.Add(new Dictionary<string, object?>
+                {
+                    ["state"] = id,
+                    ["enabled"] = enabled,
+                    ["condition"] = condition,
+                });
             }
         }
+        return new Dictionary<string, object?>
+        {
+            ["id"] = conditional.Id,
+            ["kind"] = "conditional",
+            ["branches"] = branches,
+        };
+    }
 
-        return clone;
+    private static Dictionary<string, object?> BuildCondition(
+        MegaCrit.Sts2.Core.Models.MonsterModel monster,
+        string branchId,
+        string targetId,
+        bool enabled,
+        out bool isSnapshot)
+    {
+        isSnapshot = false;
+        string monsterType = monster.GetType().Name;
+
+        // Slot/front/alone branches are fixed when the encounter constructs
+        // the monster and can safely remain constants for the whole search.
+        if (branchId == "INIT_MOVE")
+            return Condition("constant", ("value", enabled));
+
+        if (monsterType == "FrogKnight" && branchId == "HALF_HEALTH")
+        {
+            var charged = Condition("move_seen", ("move_id", "BEETLE_CHARGE"));
+            var hp = Condition("owner_hp_fraction",
+                ("cmp", targetId == "TONGUE_LASH" ? "ge" : "lt"),
+                ("numerator", 1), ("denominator", 2));
+            return targetId == "TONGUE_LASH"
+                ? Condition("or", ("args", new[] { charged, hp }))
+                : Condition("and", ("args", new[] { Condition("not", ("arg", charged)), hp }));
+        }
+
+        if (monsterType == "LivingShield")
+            return Condition("living_allies", ("cmp", targetId == "SHIELD_SLAM_MOVE" ? "gt" : "eq"), ("value", 0));
+
+        if (monsterType == "Fabricator")
+            return Condition("living_allies", ("cmp", targetId == "RAND" ? "lt" : "ge"), ("value", 4));
+
+        if (monsterType == "Ovicopter")
+            return Condition("living_allies", ("cmp", targetId == "LAY_EGGS_MOVE" ? "le" : "gt"), ("value", 3));
+
+        if (monsterType == "Queen")
+        {
+            var alive = Condition("monster_alive", ("entity_prefix", "TORCH_HEAD_AMALGAM"));
+            return targetId == "BURN_BRIGHT_FOR_ME_MOVE" ? alive : Condition("not", ("arg", alive));
+        }
+
+        if (monsterType == "KnowledgeDemon")
+            return Condition("move_count", ("move_id", "CURSE_OF_KNOWLEDGE_MOVE"),
+                ("cmp", targetId == "CURSE_OF_KNOWLEDGE_MOVE" ? "lt" : "ge"), ("value", 3));
+
+        if (monsterType == "TestSubject")
+            return Condition("move_count", ("move_id", "RESPAWN_MOVE"),
+                ("cmp", targetId == "MULTI_CLAW_MOVE" ? "lt" : "ge"), ("value", 2));
+
+        if (monsterType == "LagavulinMatriarch")
+        {
+            var asleep = Condition("owner_power", ("power_id", "ASLEEP"));
+            return targetId == "SLEEP_MOVE" ? asleep : Condition("not", ("arg", asleep));
+        }
+
+        if (monsterType == "SlumberingBeetle")
+        {
+            var slumber = Condition("owner_power", ("power_id", "SLUMBER"));
+            return targetId == "SNORE_MOVE" ? slumber : Condition("not", ("arg", slumber));
+        }
+
+        isSnapshot = true;
+        return Condition("snapshot", ("value", enabled));
+    }
+
+    private static Dictionary<string, object?> Condition(
+        string op,
+        params (string key, object? value)[] fields)
+    {
+        var result = new Dictionary<string, object?> { ["op"] = op };
+        foreach (var (key, value) in fields)
+            result[key] = value;
+        return result;
     }
 }

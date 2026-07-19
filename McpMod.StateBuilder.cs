@@ -1207,6 +1207,11 @@ public static partial class McpMod
         }
         battle["allies"] = allies;
 
+        // Gold Axe and other combat-wide counters include every player's card
+        // plays. Singleplayer now exposes the same history shape as MP.
+        try { battle["card_plays"] = BuildCardPlaysState(); }
+        catch { /* history unavailable while combat is tearing down */ }
+
         return battle;
     }
 
@@ -1536,12 +1541,11 @@ public static partial class McpMod
                 state["model_stats"] = stats;
         }
 
-        // Deterministic future moves (see McpMod.Prediction.cs): the next few
-        // turns' moves, re-rolled from the seeded AI rng.  Each entry carries
-        // the move id and its intents (same shape as "intents"), oldest first.
-        var futureMoves = GetPredictedMoves(creature);
-        if (futureMoves != null)
-            state["future_moves"] = futureMoves;
+        // Complete move graph plus its live cursor/history and the shared
+        // MonsterAi RNG position. Consumers can advance this for any horizon.
+        var intentMachine = BuildIntentMachine(creature);
+        if (intentMachine != null)
+            state["intent_machine"] = intentMachine;
 
         return state;
     }
@@ -1833,7 +1837,9 @@ public static partial class McpMod
         }
         state["options"] = options;
 
-        var proceedButton = NRestSiteRoom.Instance?.ProceedButton;
+        var openRoom = NRestSiteRoom.Instance;
+        state["room_open"] = openRoom != null;
+        var proceedButton = openRoom?.ProceedButton;
         state["can_proceed"] = proceedButton?.IsEnabled ?? false;
 
         return state;

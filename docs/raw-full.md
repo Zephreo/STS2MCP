@@ -387,18 +387,41 @@ Run state or room type not recognized.
         // BubbleStr), so a Buff/Defend/Heal move's real amounts are joinable
         // from its move_id when move_effects is absent.
         "model_stats": { "SeaKickDamage": 8, "BubbleBlock": 9, "BubbleStr": 3 },
-        // Deterministic prediction of the next few turns' moves (oldest
-        // first), re-rolled from the seeded monster-AI rng by cloning the
-        // move state machine (technique: StS2-MonsterActionPredictor).
-        // Intents have the same shape as "intents". Omitted when prediction
-        // isn't possible (stunned enemy, reflection failure). Later turns are
-        // decreasingly firm: predictions can't see in-fight events like a
-        // monster dying early or HP-threshold phase changes.
-        "future_moves": [
-          { "move_id": "BUBBLE", "intents": [ { "type": "Buff" }, { "type": "Defend" } ],
-            "effects": { "applies": [ { "power": "StrengthPower", "target": "self", "amount": 3 } ], "block": 9 } },
-          { "move_id": "SPINNING_KICK", "intents": [ { "type": "Attack", "label": "3x4", "damage": 3, "hits": 4 } ] }
-        ]
+        // Complete monster intent state machine. Move nodes include the same
+        // intent/effect shapes as the current move. Random branches retain the
+        // game's weight, repeat, max-repeat, and cooldown rules. Conditional
+        // branches are ordered; condition is a re-evaluable expression over
+        // simulated HP, powers, living allies, monster deaths, and move
+        // history. enabled preserves the live closure result for diagnostics.
+        // Unknown modded closures use {op:"snapshot"} and set the top-level
+        // snapshot flag. rng_seed/rng_counter identify the
+        // shared MonsterAi xoshiro256** stream used by all enemies in slot
+        // order. Omitted when reflection fails or no machine exists.
+        "intent_machine": {
+          "initial_state": "BUBBLE",
+          "current_state": "SEA_KICK",
+          "state_log": ["BUBBLE", "SEA_KICK"],
+          "rng_seed": 12345,
+          "rng_counter": 7,
+          "conditional_values_are_snapshots": true,
+          "random_weights_are_snapshots": false,
+          "states": [
+            { "id": "SEA_KICK", "kind": "move", "follow_up": "CHOICE",
+              "intents": [ { "type": "Attack", "label": "8" } ] },
+            { "id": "CHOICE", "kind": "random", "branches": [
+              { "state": "BUBBLE", "weight": 1.0, "repeat": "CannotRepeat",
+                "max_repeats": 0, "cooldown": 0 }
+            ] },
+            { "id": "PHASE", "kind": "conditional", "branches": [
+              { "state": "BUBBLE", "enabled": true,
+                "condition": { "op": "owner_hp_fraction", "cmp": "ge",
+                  "numerator": 1, "denominator": 2 } },
+              { "state": "SPINNING_KICK", "enabled": false,
+                "condition": { "op": "owner_hp_fraction", "cmp": "lt",
+                  "numerator": 1, "denominator": 2 } }
+            ] }
+          ]
+        }
       }
     ]
   },
@@ -589,6 +612,7 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
 {
   "state_type": "rest_site",
   "rest_site": {
+    "room_open": true,          // false while the room UI is still loading
     "options": [
       {
         "index": 0,
