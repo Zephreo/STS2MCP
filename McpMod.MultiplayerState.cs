@@ -286,6 +286,12 @@ public static partial class McpMod
         }
         battle["enemies"] = enemies;
 
+        // Run RNG stream coordinates — the host-synced RunRngSet is shared by
+        // all players in lockstep MP, so the local counters reflect everyone.
+        var rngStreams = BuildRngStreams(runState);
+        if (rngStreams != null)
+            battle["rng_streams"] = rngStreams;
+
         // Combat history: every player's card plays + per-player damage dealt
         // to enemies.  MP combat is lockstep (ActionQueueSynchronizer replays
         // every peer's actions locally), so the local CombatHistory contains

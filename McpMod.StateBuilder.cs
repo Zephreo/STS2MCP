@@ -1187,6 +1187,12 @@ public static partial class McpMod
         }
         battle["enemies"] = enemies;
 
+        // Run RNG stream coordinates (seed/counter per stream) so the planner
+        // can resolve shuffle/target randomness exactly. See McpMod.RngStreams.cs.
+        var rngStreams = BuildRngStreams(runState);
+        if (rngStreams != null)
+            battle["rng_streams"] = rngStreams;
+
         // Allies (summons)
         var allies = new List<Dictionary<string, object?>>();
         if (combatState.Allies != null)

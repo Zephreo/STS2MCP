@@ -423,7 +423,29 @@ Run state or room type not recognized.
           ]
         }
       }
-    ]
+    ],
+    // Run RNG stream coordinates (singleplayer and multiplayer battle states).
+    // Each stream is an independent xoshiro256** generator seeded once per run
+    // (seed = run seed + hash(snake_case(stream name))); counter = values
+    // consumed so far. Reconstructing the stream at counter and rolling it
+    // forward predicts future random results exactly: "shuffle" drives
+    // reshuffle order (StableShuffle: sort by (card id, upgrade level) then
+    // Fisher-Yates downward, count-1 rolls) plus random-position inserts and
+    // Beat Down/Catastrophe/Uproar-style pile picks; "combat_targets" drives
+    // random-target attacks and orb targeting (one NextInt(0, n) roll per
+    // pick over hittable enemies in slot order). In MP the host-synced
+    // RunRngSet is shared by all players in lockstep. Streams are read via
+    // reflection; a renamed stream is omitted. Absent if reflection fails.
+    "rng_streams": {
+      "shuffle":                 { "seed": 3054346721, "counter": 42 },
+      "combat_targets":          { "seed": 1938475601, "counter": 3 },
+      "combat_card_generation":  { "seed": 77120981,   "counter": 0 },
+      "combat_card_selection":   { "seed": 445910227,  "counter": 1 },
+      "combat_energy_costs":     { "seed": 8912345,    "counter": 0 },
+      "combat_orb_generation":   { "seed": 190283345,  "counter": 0 },
+      "combat_potion_generation":{ "seed": 5523187,    "counter": 0 },
+      "monster_ai":              { "seed": 12345,      "counter": 7 }
+    }
   },
   "run": { ... },
   "player": { ... }  // Includes hand, energy, piles, orbs during combat
