@@ -33,6 +33,19 @@ public static partial class McpMod
         "CombatOrbGeneration",
         "CombatPotionGeneration",
         "MonsterAi",
+        // Run-level (non-combat) streams. Exported so a consumer can predict
+        // map/room contents before arriving:
+        //   UpFront          - everything rolled at run start: the monster/elite
+        //                      encounter order, the event pool, the relic offers.
+        //   UnknownMapPoint  - the room TYPE rolled when you step on a "?" node
+        //                      (UnknownMapPointOdds.Roll: one NextFloat per visit,
+        //                      stateful odds accumulating across the act).
+        //   Niche            - one-off run RNG (CursedRun modifier, etc.).
+        //   TreasureRoomRelics - MP tie-break when players pick the same relic.
+        "UpFront",
+        "UnknownMapPoint",
+        "Niche",
+        "TreasureRoomRelics",
     };
 
     private static readonly Dictionary<string, PropertyInfo?> _rngStreamProps = new();
@@ -57,6 +70,15 @@ public static partial class McpMod
             }
 
             var streams = new Dictionary<string, object?>();
+
+            // The base run seed and its input string. The map LAYOUT is not one of
+            // the enumerated streams: StandardActMap builds from a fresh
+            // `new Rng(runState.Rng.Seed, $"act_{act}_map")` derived purely from
+            // this seed, so a consumer can reconstruct the whole layout (and any
+            // other ad-hoc `new Rng(Seed, name)` stream) from run_seed alone.
+            streams["run_seed"] = rngSet.Seed;
+            streams["run_string_seed"] = rngSet.StringSeed;
+
             foreach (var name in _rngStreamNames)
             {
                 var prop = _rngStreamProps[name];

@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -11,6 +12,7 @@ using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.Potions;
+using MegaCrit.Sts2.Core.Factories;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
@@ -1228,6 +1230,7 @@ public static partial class McpMod
         var combatState = player.PlayerCombatState;
 
         state["character"] = SafeGetText(() => player.Character.Title);
+        state["combat_id"] = creature.CombatId;
         state["hp"] = creature.CurrentHp;
         state["max_hp"] = creature.MaxHp;
         state["block"] = creature.Block;
@@ -1303,6 +1306,7 @@ public static partial class McpMod
             state["draw_pile"] = BuildPileCardList(combatState.DrawPile.Cards, PileType.Draw);
             state["discard_pile"] = BuildPileCardList(combatState.DiscardPile.Cards, PileType.Discard);
             state["exhaust_pile"] = BuildPileCardList(combatState.ExhaustPile.Cards, PileType.Exhaust);
+            state["combat_card_generation_pool"] = BuildCombatCardGenerationPool(player);
 
             // Orbs
             AddOrbsState(state, player);
@@ -1327,6 +1331,18 @@ public static partial class McpMod
         AddPotionsState(state, player);
 
         return state;
+    }
+
+    // Exact ordered choice domain used by CallOfTheVoidPower. Exporting it is
+    // read-only and does not advance CombatCardGeneration.
+    private static List<string> BuildCombatCardGenerationPool(Player player)
+    {
+        return CardFactory.FilterForCombat(
+                player.Character.CardPool.GetUnlockedCards(
+                    player.UnlockState,
+                    player.RunState.CardMultiplayerConstraint))
+            .Select(card => SafeGetText(() => card.Title) ?? card.Id.Entry)
+            .ToList();
     }
 
     // Serializes a player's relics. Shared by the local player (BuildPlayerState)
@@ -2685,12 +2701,37 @@ public static partial class McpMod
         var powers = new List<Dictionary<string, object?>>();
         foreach (var power in creature.Powers)
         {
-            if (!power.IsVisible) continue;
+            // The planner needs every power instance, including hidden tracker
+            // powers. Identity, lifecycle state, and instance links are read
+            // without touching localization so a broken hover tip cannot erase
+            // mechanically relevant state.
+            var entry = new Dictionary<string, object?>
+            {
+                ["id"] = power.Id.Entry,
+                ["amount"] = power.Amount,
+                ["display_amount"] = power.DisplayAmount,
+                ["amount_on_turn_start"] = power.AmountOnTurnStart,
+                ["skip_next_duration_tick"] = power.SkipNextDurationTick,
+                ["type"] = power.TypeForCurrentAmount.ToString(),
+                ["instance_type"] = power.InstanceType.ToString(),
+                ["applier_combat_id"] = power.Applier?.CombatId,
+                ["target_combat_id"] = power.Target?.CombatId,
+                ["is_visible"] = power.IsVisible,
+                ["vars"] = power.DynamicVars.ToDictionary(
+                    pair => pair.Key,
+                    pair => (object?)new Dictionary<string, object?>
+                    {
+                        ["base"] = pair.Value.BaseValue,
+                        ["enchanted"] = pair.Value.EnchantedValue,
+                        ["preview"] = pair.Value.PreviewValue,
+                        ["rendered"] = pair.Value.ToString()
+                    }),
+                ["runtime"] = BuildPowerRuntimeState(power)
+            };
+            powers.Add(entry);
 
-            // Per-power try/catch: HoverTips getter calls into game engine code
-            // (LocString resolution, DynamicVars, virtual ExtraHoverTips) that can
-            // throw during state transitions. Skip the power rather than fail the
-            // entire state query.
+            // Localization and hover tips are advisory. Keep the exact power
+            // instance above even when game UI code throws mid-transition.
             try
             {
                 var allTips = power.HoverTips.ToList();
@@ -2710,19 +2751,92 @@ public static partial class McpMod
                 }
                 resolvedDesc ??= SafeGetText(() => power.SmartDescription);
 
-                powers.Add(new Dictionary<string, object?>
-                {
-                    ["id"] = power.Id.Entry,
-                    ["name"] = SafeGetText(() => power.Title),
-                    ["amount"] = power.DisplayAmount,
-                    ["type"] = power.Type.ToString(),
-                    ["description"] = resolvedDesc,
-                    ["keywords"] = BuildHoverTips(extraTips)
-                });
+                entry["name"] = SafeGetText(() => power.Title);
+                entry["description"] = resolvedDesc;
+                entry["keywords"] = BuildHoverTips(extraTips);
             }
-            catch { /* skip this power - game engine state may be inconsistent */ }
+            catch { /* retain the exact mechanical fields already added */ }
         }
         return powers;
+    }
+
+    private static Dictionary<string, object?> BuildPowerRuntimeState(PowerModel power)
+    {
+        var runtime = new Dictionary<string, object?>();
+        var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
+
+        // Concrete and intermediate power classes contain state such as
+        // counters, selected cards, and facing. Base PowerModel lifecycle state
+        // is exported explicitly by BuildPowersState and is not duplicated.
+        for (Type? type = power.GetType(); type != null && type != typeof(PowerModel); type = type.BaseType)
+        {
+            foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly))
+            {
+                if (field.IsStatic || field.IsLiteral)
+                    continue;
+                runtime[field.Name] = SerializePowerRuntimeValue(field.GetValue(power), seen, 0);
+            }
+        }
+
+        // PowerModel owns each subclass's InitInternalData result in a private
+        // field, so it must be read from the base class explicitly.
+        var internalDataField = typeof(PowerModel).GetField("_internalData", BindingFlags.Instance | BindingFlags.NonPublic);
+        runtime["_internalData"] = SerializePowerRuntimeValue(internalDataField?.GetValue(power), seen, 0);
+        return runtime;
+    }
+
+    private static object? SerializePowerRuntimeValue(object? value, HashSet<object> seen, int depth)
+    {
+        if (value == null)
+            return null;
+        if (value is string or bool or byte or sbyte or short or ushort or int or uint or long or ulong
+            or float or double or decimal)
+            return value;
+        if (value is Enum enumValue)
+            return enumValue.ToString();
+        if (value is Creature creature)
+            return new Dictionary<string, object?> { ["kind"] = "creature", ["combat_id"] = creature.CombatId };
+        if (value is CardModel card)
+        {
+            var cardState = BuildCardInfo(card);
+            cardState["kind"] = "card";
+            cardState["pile"] = card.Pile?.Type.ToString();
+            cardState["play_index"] = card.CurrentPlayIndex;
+            return cardState;
+        }
+        if (value is AbstractModel model)
+            return new Dictionary<string, object?> { ["kind"] = "model", ["id"] = model.Id.Entry };
+        if (depth >= 5 || !seen.Add(value))
+            return new Dictionary<string, object?> { ["kind"] = "reference", ["type"] = value.GetType().FullName };
+
+        if (value is IDictionary dictionary)
+        {
+            var entries = new List<Dictionary<string, object?>>();
+            foreach (DictionaryEntry pair in dictionary)
+            {
+                entries.Add(new Dictionary<string, object?>
+                {
+                    ["key"] = SerializePowerRuntimeValue(pair.Key, seen, depth + 1),
+                    ["value"] = SerializePowerRuntimeValue(pair.Value, seen, depth + 1)
+                });
+            }
+            return entries;
+        }
+        if (value is IEnumerable enumerable)
+        {
+            var items = new List<object?>();
+            foreach (var item in enumerable)
+                items.Add(SerializePowerRuntimeValue(item, seen, depth + 1));
+            return items;
+        }
+
+        var result = new Dictionary<string, object?> { ["kind"] = "object", ["type"] = value.GetType().FullName };
+        foreach (var field in value.GetType().GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
+        {
+            if (!field.IsStatic && !field.IsLiteral)
+                result[field.Name] = SerializePowerRuntimeValue(field.GetValue(value), seen, depth + 1);
+        }
+        return result;
     }
 
     private static List<Dictionary<string, object?>> BuildPetsState(Player player)

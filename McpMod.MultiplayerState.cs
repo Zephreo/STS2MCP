@@ -584,6 +584,7 @@ public static partial class McpMod
                             entry["draw_pile"] = BuildPileCardList(cs.DrawPile.Cards, PileType.Draw);
                             entry["discard_pile"] = BuildPileCardList(cs.DiscardPile.Cards, PileType.Discard);
                             entry["exhaust_pile"] = BuildPileCardList(cs.ExhaustPile.Cards, PileType.Exhaust);
+                            entry["combat_card_generation_pool"] = BuildCombatCardGenerationPool(player);
 
                             // Powers/status + orbs — also needed to model their
                             // turn (Strength/Vulnerable scaling, Defect orbs).
