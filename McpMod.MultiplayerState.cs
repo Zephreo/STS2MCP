@@ -240,12 +240,18 @@ public static partial class McpMod
         }
 
         // Common run info
-        result["run"] = new Dictionary<string, object?>
+        var runInfo = new Dictionary<string, object?>
         {
             ["act"] = runState.CurrentActIndex + 1,
             ["floor"] = runState.TotalFloor,
             ["ascension"] = runState.AscensionLevel
         };
+        // Run RNG streams on every screen, not just in combat. The host-synced
+        // RunRngSet is shared by all players, so these counters reflect everyone.
+        var runRng = BuildRngStreams(runState);
+        if (runRng != null)
+            runInfo["rng"] = runRng;
+        result["run"] = runInfo;
 
         // All players summary (always included for multiplayer)
         result["players"] = BuildAllPlayersState(runState);
@@ -345,6 +351,8 @@ public static partial class McpMod
                 ["is_local"] = LocalContext.IsMe(cardPlay.Card.Owner),
                 ["card_id"] = SafeGetText(() => cardPlay.Card.Id.Entry),
                 ["card_name"] = SafeGetText(() => cardPlay.Card.Title),
+                ["play_index"] = cardPlay.PlayIndex,
+                ["play_count"] = cardPlay.PlayCount,
                 ["target"] = target
             });
         }
@@ -536,6 +544,13 @@ public static partial class McpMod
                 ["gold"] = player.Gold,
                 ["is_alive"] = player.Creature.IsAlive
             };
+
+            // Each player rolls their own rewards/shops/transformations off a
+            // slot-seeded PlayerRngSet. See McpMod.RngStreams.cs.
+            var playerRng = BuildPlayerRngStreams(player);
+            if (playerRng != null)
+                entry["rng"] = playerRng;
+
             if (inCombat)
             {
                 entry["combat_id"] = player.Creature.CombatId;
@@ -585,6 +600,11 @@ public static partial class McpMod
                             entry["discard_pile"] = BuildPileCardList(cs.DiscardPile.Cards, PileType.Discard);
                             entry["exhaust_pile"] = BuildPileCardList(cs.ExhaustPile.Cards, PileType.Exhaust);
                             entry["combat_card_generation_pool"] = BuildCombatCardGenerationPool(player);
+                            entry["combat_power_generation_pool"] =
+                                BuildCharacterGenerationPool(player, card => card.Type == CardType.Power);
+                            entry["combat_common_generation_pool"] =
+                                BuildCharacterGenerationPool(player, card => card.Rarity == CardRarity.Common);
+                            entry["combat_colorless_generation_pool"] = BuildColorlessGenerationPool(player);
 
                             // Powers/status + orbs — also needed to model their
                             // turn (Strength/Vulnerable scaling, Defect orbs).

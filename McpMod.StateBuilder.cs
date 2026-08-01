@@ -43,6 +43,7 @@ using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Models.RelicPools;
+using MegaCrit.Sts2.Core.Models.CardPools;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using MegaCrit.Sts2.Core.Multiplayer;
@@ -674,12 +675,19 @@ public static partial class McpMod
         }
 
         // Common run info
-        result["run"] = new Dictionary<string, object?>
+        var runInfo = new Dictionary<string, object?>
         {
             ["act"] = runState.CurrentActIndex + 1,
             ["floor"] = runState.TotalFloor,
             ["ascension"] = runState.AscensionLevel
         };
+        // Run RNG streams on every screen, not just in combat: map layout, "?"
+        // node contents and the encounter order are all rolled outside a battle.
+        // See McpMod.RngStreams.cs. battle.rng_streams carries the same block.
+        var runRng = BuildRngStreams(runState);
+        if (runRng != null)
+            runInfo["rng"] = runRng;
+        result["run"] = runInfo;
 
         // Always include full player data (relics, potions, deck, etc.) on every screen
         var _player = LocalContext.GetMe(runState);
@@ -1235,6 +1243,13 @@ public static partial class McpMod
         state["max_hp"] = creature.MaxHp;
         state["block"] = creature.Block;
 
+        // Player-scoped RNG (Rewards / Shops / Transformations) + the odds
+        // accumulators those rolls are compared against, so card/potion/shop
+        // rewards are predictable. See McpMod.RngStreams.cs.
+        var playerRng = BuildPlayerRngStreams(player);
+        if (playerRng != null)
+            state["rng"] = playerRng;
+
         // Master deck (run deck, not combat piles) — needed by deck-building
         // policies outside combat (card rewards, shop removal, upgrades).
         try
@@ -1306,7 +1321,10 @@ public static partial class McpMod
             state["draw_pile"] = BuildPileCardList(combatState.DrawPile.Cards, PileType.Draw);
             state["discard_pile"] = BuildPileCardList(combatState.DiscardPile.Cards, PileType.Discard);
             state["exhaust_pile"] = BuildPileCardList(combatState.ExhaustPile.Cards, PileType.Exhaust);
-            state["combat_card_generation_pool"] = BuildCombatCardGenerationPool(player);
+        state["combat_card_generation_pool"] = BuildCombatCardGenerationPool(player);
+        state["combat_power_generation_pool"] = BuildCharacterGenerationPool(player, card => card.Type == CardType.Power);
+        state["combat_common_generation_pool"] = BuildCharacterGenerationPool(player, card => card.Rarity == CardRarity.Common);
+        state["combat_colorless_generation_pool"] = BuildColorlessGenerationPool(player);
 
             // Orbs
             AddOrbsState(state, player);
@@ -1339,6 +1357,27 @@ public static partial class McpMod
     {
         return CardFactory.FilterForCombat(
                 player.Character.CardPool.GetUnlockedCards(
+                    player.UnlockState,
+                    player.RunState.CardMultiplayerConstraint))
+            .Select(card => SafeGetText(() => card.Title) ?? card.Id.Entry)
+            .ToList();
+    }
+
+    private static List<string> BuildCharacterGenerationPool(Player player, Func<CardModel, bool> predicate)
+    {
+        return CardFactory.FilterForCombat(
+                player.Character.CardPool.GetUnlockedCards(
+                        player.UnlockState,
+                        player.RunState.CardMultiplayerConstraint)
+                    .Where(predicate))
+            .Select(card => SafeGetText(() => card.Title) ?? card.Id.Entry)
+            .ToList();
+    }
+
+    private static List<string> BuildColorlessGenerationPool(Player player)
+    {
+        return CardFactory.FilterForCombat(
+                ModelDb.CardPool<ColorlessCardPool>().GetUnlockedCards(
                     player.UnlockState,
                     player.RunState.CardMultiplayerConstraint))
             .Select(card => SafeGetText(() => card.Title) ?? card.Id.Entry)
@@ -1568,6 +1607,12 @@ public static partial class McpMod
         var intentMachine = BuildIntentMachine(creature);
         if (intentMachine != null)
             state["intent_machine"] = intentMachine;
+
+        // This creature's own monster-local RNG stream, assigned at creation
+        // from the run seed + map coordinate. See McpMod.RngStreams.cs.
+        var monsterRng = BuildMonsterRng(creature);
+        if (monsterRng != null)
+            state["rng"] = monsterRng;
 
         return state;
     }

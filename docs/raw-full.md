@@ -437,20 +437,100 @@ Run state or room type not recognized.
     // pick over hittable enemies in slot order). In MP the host-synced
     // RunRngSet is shared by all players in lockstep. Streams are read via
     // reflection; a renamed stream is omitted. Absent if reflection fails.
-    "rng_streams": {
-      "shuffle":                 { "seed": 3054346721, "counter": 42 },
-      "combat_targets":          { "seed": 1938475601, "counter": 3 },
-      "combat_card_generation":  { "seed": 77120981,   "counter": 0 },
-      "combat_card_selection":   { "seed": 445910227,  "counter": 1 },
-      "combat_energy_costs":     { "seed": 8912345,    "counter": 0 },
-      "combat_orb_generation":   { "seed": 190283345,  "counter": 0 },
-      "combat_potion_generation":{ "seed": 5523187,    "counter": 0 },
-      "monster_ai":              { "seed": 12345,      "counter": 7 }
-    }
+    // Identical to `run.rng` — see the "Run RNG" section below for the full
+    // stream list, the run seed and the odds accumulators.
+    "rng_streams": { "...": "same block as run.rng" }
   },
-  "run": { ... },
-  "player": { ... }  // Includes hand, energy, piles, orbs during combat
+  "run": { ... },   // Carries "rng" on every screen, in and out of combat
+  "player": { ... } // Includes hand, energy, piles, orbs during combat, plus
+                    // that player's own "rng" (rewards/shops/transformations)
 }
+```
+
+### Run RNG — `run.rng` / `battle.rng_streams` / `player.rng` / enemy `rng`
+
+Every deterministic generator the game holds is exported. Each is an independent
+xoshiro256** stream seeded once (seed = owning seed + `hash(snake_case(name))`),
+with `counter` = values consumed so far. Reconstructing a stream at its counter
+and rolling it forward predicts future random results exactly. Nothing here ever
+advances a live stream.
+
+Streams are read via reflection: a renamed stream is omitted rather than
+crashing, and a stream added by a game update is picked up automatically (under
+its snake-cased type name if it has no property accessor).
+
+**`run.rng`** — the run-wide `RunRngSet`, present on every screen (not just in
+combat, since map layout, `?`-node contents and the encounter order are all
+rolled outside a battle). `battle.rng_streams` carries the same block during
+combat, for backwards compatibility.
+
+```jsonc
+"rng": {
+  "run_seed": 3054346721,       // uint hash of the seed string; the map LAYOUT is
+                                // a fresh `new Rng(run_seed, "act_N_map")`, so it
+                                // is reconstructible from this alone
+  "run_string_seed": "ABC123",  // the seed as typed/displayed
+
+  "up_front":                { "seed": 771209812, "counter": 12 },  // monster/elite order, event pool, relic offers
+  "shuffle":                 { "seed": 3054346721, "counter": 42 }, // reshuffles (StableShuffle: sort by (card id,
+                                                                    // upgrade level) then Fisher-Yates downward,
+                                                                    // count-1 rolls), random-position inserts,
+                                                                    // Beat Down/Catastrophe/Uproar pile picks
+  "unknown_map_point":       { "seed": 118273645, "counter": 4 },   // the room type a "?" node rolls into
+  "combat_card_generation":  { "seed": 77120981,  "counter": 0 },
+  "combat_potion_generation":{ "seed": 5523187,   "counter": 0 },
+  "combat_card_selection":   { "seed": 445910227, "counter": 1 },   // True Grit-style random card picks
+  "combat_energy_costs":     { "seed": 8912345,   "counter": 0 },   // Confusion / Snecko Eye
+  "combat_targets":          { "seed": 1938475601,"counter": 3 },   // random-target attacks and orb targeting
+                                                                    // (one NextInt(0, n) per pick, hittable
+                                                                    // enemies in slot order)
+  "monster_ai":              { "seed": 12345,     "counter": 7 },
+  "niche":                   { "seed": 992134,    "counter": 9 },   // CursedRun, and SPAWNED MONSTER HP:
+                                                                    // CombatState.CreateCreature calls
+                                                                    // Creature.SetUniqueMonsterHpValue(niche),
+                                                                    // so mid-combat summons (Infested wrigglers,
+                                                                    // Surprise gremlins) are predictable
+  "combat_orb_generation":   { "seed": 190283345, "counter": 0 },   // Chaos
+  "treasure_room_relics":    { "seed": 44120983,  "counter": 0 },   // MP tie-break on duplicate relic picks
+
+  // Stateful odds the rolls are compared against. A counter alone cannot
+  // predict a "?" node without the running odds value.
+  "odds": {
+    "unknown_map_point": {
+      "current_value": 0.0,
+      "monster_odds": 0.1, "elite_odds": -1.0,   // negative = never rolled
+      "treasure_odds": 0.02, "shop_odds": 0.03
+    }
+  }
+}
+```
+
+**`player.rng`** (and `players[i].rng` in multiplayer) — the per-player
+`PlayerRngSet`, seeded from the run seed plus the player's **slot** index.
+
+```jsonc
+"rng": {
+  "seed": 3054346799,
+  "slot_index": 0,              // also needed to rebuild ad-hoc content RNGs,
+                                // which seed from run seed + slot + content id
+  "rewards":         { "seed": 1122334, "counter": 6 },  // card + potion rewards, and
+                                                         // whether a potion drops at all
+  "shops":           { "seed": 5566778, "counter": 2 },
+  "transformations": { "seed": 9900112, "counter": 0 },
+  "odds": {
+    "card_rarity":   { "current_value": 0.0 },
+    "potion_reward": { "current_value": 0.4 }
+  }
+}
+```
+
+**Enemy `rng`** — each enemy in `battle.enemies[]` carries its own monster-local
+stream, assigned in `CombatState.CreateCreature` from the run seed and the
+current map coordinate. Omitted for canonical (non-mutable) models, whose getter
+returns the non-deterministic `Rng.Chaotic`.
+
+```jsonc
+"rng": { "seed": 3054346722, "counter": 3 }
 ```
 
 ### `hand_select` — In-Combat Card Selection
