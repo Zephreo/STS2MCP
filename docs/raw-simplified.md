@@ -9,6 +9,7 @@ HTTP API on `localhost:15526`. No authentication.
 - `GET /api/v1/profile` — read current profile progress
 - `GET /api/v1/compendium` — read Compendium-shaped profile progress
 - `GET /api/v1/wiki` — fuzzy-search discovered card/relic wiki entries
+- `GET /api/v1/cardpools` — every unlocked card pool in roll order (static per run)
 - `GET /api/v1/profiles` — list profile slots
 - `POST /api/v1/profiles` — switch or delete profile slots
 
@@ -85,6 +86,8 @@ Example searches:
 
 - `/api/v1/wiki?query=ironclad%20perfect%20strike&item_type=card`
 - `/api/v1/wiki?query=silver%20spoon&item_type=relic&limit=5`
+
+`GET /api/v1/cardpools` returns every unlocked card pool (all five characters plus the shared Colorless, Curse, Deprecated, Event, Quest, Status and Token pools), each card carrying `id`, `name`, `type`, `rarity`, its own `pool` and `can_be_generated_in_combat`. Added in 0.5.0, replacing the five per-state `combat_*_pool` fields. **Card order is load-bearing** — the game's `Rng.NextItem` indexes straight into these lists — so never sort them. The payload is static for a run but not across runs (multiplayer unlock state is the union over all players), so fetch it at each run start.
 
 `GET /api/v1/profiles` returns the three profile slots:
 

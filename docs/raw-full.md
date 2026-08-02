@@ -10,6 +10,7 @@ HTTP API served by the STS2_MCP mod on `localhost:15526`. No authentication. Loc
 - `GET  /api/v1/profile` — read current profile progress
 - `GET  /api/v1/compendium` — read Compendium-shaped profile progress
 - `GET  /api/v1/wiki` — fuzzy-search discovered card/relic wiki entries
+- `GET  /api/v1/cardpools` — every unlocked card pool in roll order (static per run)
 - `GET  /api/v1/profiles` — list profile slots
 - `POST /api/v1/profiles` — switch or delete profile slots
 
@@ -67,8 +68,6 @@ Always present at the top level (except `menu`). Contains everything about the l
   "draw_pile": [ /* Pile Card Objects, in true order (index 0 = next draw; valid until the next shuffle event) */ ],
   "discard_pile": [ /* Pile Card Objects */ ],
   "exhaust_pile": [ /* Pile Card Objects */ ],
-  "combat_card_generation_pool": [ "Bash", "Cleave", "Defend" ], // exact ordered unlocked pool used by Call of the Void
-  "combat_transform_pools": { "STRIKE_IRONCLAD": [ "Bash", "Cleave" ] }, // exact ordered per-original-card pools used by in-combat Transform
   "orbs": [ /* Orb Objects */ ],   // Defect only; omitted if orb capacity is 0
   "orb_slots": 3,
   "orb_empty_slots": 1,
@@ -1175,6 +1174,53 @@ GET /api/v1/wiki?query=silver%20spoon&item_type=relic
 ```
 
 Relic results include `id`, `name`, `rarity`, `description`, and `keywords`.
+
+### `GET /api/v1/cardpools`
+
+Every unlocked card pool, in the order the game rolls them. Added in 0.5.0,
+replacing the five per-state `combat_*_pool` fields.
+
+The payload is **static for a run** but not across runs: in multiplayer the
+unlock state is the union over all players, and the multiplayer constraint
+follows the player count. Fetch it once when a run starts, not per tick.
+
+```json
+{
+  "source": "run",                     // "run", "profile" (no run loaded), or "none"
+  "multiplayer_constraint": "SingleplayerOnly",
+  "characters": { "Ironclad": "ironclad" },   // character display name -> pool title
+  "pools": {
+    "ironclad": {
+      "is_colorless": false,
+      "cards": [
+        {
+          "id": "BASH",
+          "name": "Bash",
+          "type": "Attack",
+          "rarity": "Common",
+          "pool": "ironclad",               // the card's OWN pool, which can differ
+          "can_be_generated_in_combat": true
+        }
+      ]
+    },
+    "colorless": { "...": "..." }, "status": { "...": "..." }, "curse": { "...": "..." }
+  }
+}
+```
+
+Pools cover all five characters plus the shared Colorless, Curse, Deprecated,
+Event, Quest, Status and Token pools.
+
+**Card order is load-bearing.** The game's `Rng.NextItem` indexes straight into
+these lists, so consumers must preserve the order exactly — sorting them changes
+which card a roll produces. Two derived domains follow from this payload:
+
+- *combat generation* (Call of the Void, Creative AI, Hello World, Spectrum
+  Shift) — keep `can_be_generated_in_combat`, drop `Basic`/`Ancient`/`Event`;
+- *transformation* (Entropy) — draw from the original card's own `pool`, or the
+  colorless pool when the original is `Quest` type or `Event`/`Ancient`/`Token`
+  rarity; keep only `Common`/`Uncommon`/`Rare` unless the original is `Status`
+  or `Curse` (those draw from their whole pool); always exclude the original.
 
 ### `GET /api/v1/profiles`
 

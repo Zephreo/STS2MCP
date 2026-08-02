@@ -19,7 +19,7 @@ namespace STS2_MCP;
 [ModInitializer("Initialize")]
 public static partial class McpMod
 {
-    public const string Version = "0.4.0";
+    public const string Version = "0.5.0";
     public const int DefaultPort = 15526;
     private const string ConfigFileName = "STS2_MCP.conf";
 
@@ -257,6 +257,13 @@ public static partial class McpMod
             {
                 if (request.HttpMethod == "GET")
                     HandleGetWiki(request, response);
+                else
+                    SendError(response, 405, "Method not allowed");
+            }
+            else if (path == "/api/v1/cardpools")
+            {
+                if (request.HttpMethod == "GET")
+                    HandleGetCardPools(response);
                 else
                     SendError(response, 405, "Method not allowed");
             }

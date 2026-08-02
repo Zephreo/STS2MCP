@@ -12,7 +12,6 @@ using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.Potions;
-using MegaCrit.Sts2.Core.Factories;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
@@ -1321,11 +1320,9 @@ public static partial class McpMod
             state["draw_pile"] = BuildPileCardList(combatState.DrawPile.Cards, PileType.Draw);
             state["discard_pile"] = BuildPileCardList(combatState.DiscardPile.Cards, PileType.Discard);
             state["exhaust_pile"] = BuildPileCardList(combatState.ExhaustPile.Cards, PileType.Exhaust);
-        state["combat_card_generation_pool"] = BuildCombatCardGenerationPool(player);
-        state["combat_transform_pools"] = BuildCombatTransformPools(player);
-        state["combat_power_generation_pool"] = BuildCharacterGenerationPool(player, card => card.Type == CardType.Power);
-        state["combat_common_generation_pool"] = BuildCharacterGenerationPool(player, card => card.Rarity == CardRarity.Common);
-        state["combat_colorless_generation_pool"] = BuildColorlessGenerationPool(player);
+        // Card-generation and transformation domains are static for a run and
+        // are served by GET /api/v1/cardpools instead; rebuilding them here
+        // cost a full pool enumeration per distinct deck card, every poll.
 
             // Orbs
             AddOrbsState(state, player);
@@ -1350,70 +1347,6 @@ public static partial class McpMod
         AddPotionsState(state, player);
 
         return state;
-    }
-
-    // Exact ordered choice domain used by CallOfTheVoidPower. Exporting it is
-    // read-only and does not advance CombatCardGeneration.
-    private static List<string> BuildCombatCardGenerationPool(Player player)
-    {
-        return CardFactory.FilterForCombat(
-                player.Character.CardPool.GetUnlockedCards(
-                    player.UnlockState,
-                    player.RunState.CardMultiplayerConstraint))
-            .Select(card => SafeGetText(() => card.Title) ?? card.Id.Entry)
-            .ToList();
-    }
-
-    // Exact per-card domains consumed by CardCmd.TransformToRandom in combat.
-    // The eligible pool depends on the original card's pool, rarity and ID, so
-    // the broader combat-generation pool cannot reconstruct Entropy's roll.
-    private static Dictionary<string, List<string>> BuildCombatTransformPools(Player player)
-    {
-        var pools = new Dictionary<string, List<string>>();
-        var combatState = player.PlayerCombatState;
-        if (combatState == null)
-            return pools;
-
-        foreach (var card in combatState.AllCards)
-        {
-            string id = card.Id.Entry.ToUpperInvariant();
-            if (pools.ContainsKey(id))
-                continue;
-
-            try
-            {
-                pools[id] = CardFactory.GetDefaultTransformationOptions(card, true)
-                    .Select(option => SafeGetText(() => option.Title) ?? option.Id.Entry)
-                    .ToList();
-            }
-            catch
-            {
-                // An intrinsically untransformable/modded card has no legal
-                // Entropy result; omit only that domain, never the state.
-            }
-        }
-        return pools;
-    }
-
-    private static List<string> BuildCharacterGenerationPool(Player player, Func<CardModel, bool> predicate)
-    {
-        return CardFactory.FilterForCombat(
-                player.Character.CardPool.GetUnlockedCards(
-                        player.UnlockState,
-                        player.RunState.CardMultiplayerConstraint)
-                    .Where(predicate))
-            .Select(card => SafeGetText(() => card.Title) ?? card.Id.Entry)
-            .ToList();
-    }
-
-    private static List<string> BuildColorlessGenerationPool(Player player)
-    {
-        return CardFactory.FilterForCombat(
-                ModelDb.CardPool<ColorlessCardPool>().GetUnlockedCards(
-                    player.UnlockState,
-                    player.RunState.CardMultiplayerConstraint))
-            .Select(card => SafeGetText(() => card.Title) ?? card.Id.Entry)
-            .ToList();
     }
 
     // Serializes a player's relics. Shared by the local player (BuildPlayerState)
