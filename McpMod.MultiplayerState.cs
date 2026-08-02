@@ -600,6 +600,7 @@ public static partial class McpMod
                             entry["discard_pile"] = BuildPileCardList(cs.DiscardPile.Cards, PileType.Discard);
                             entry["exhaust_pile"] = BuildPileCardList(cs.ExhaustPile.Cards, PileType.Exhaust);
                             entry["combat_card_generation_pool"] = BuildCombatCardGenerationPool(player);
+                            entry["combat_transform_pools"] = BuildCombatTransformPools(player);
                             entry["combat_power_generation_pool"] =
                                 BuildCharacterGenerationPool(player, card => card.Type == CardType.Power);
                             entry["combat_common_generation_pool"] =

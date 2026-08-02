@@ -68,6 +68,7 @@ Always present at the top level (except `menu`). Contains everything about the l
   "discard_pile": [ /* Pile Card Objects */ ],
   "exhaust_pile": [ /* Pile Card Objects */ ],
   "combat_card_generation_pool": [ "Bash", "Cleave", "Defend" ], // exact ordered unlocked pool used by Call of the Void
+  "combat_transform_pools": { "STRIKE_IRONCLAD": [ "Bash", "Cleave" ] }, // exact ordered per-original-card pools used by in-combat Transform
   "orbs": [ /* Orb Objects */ ],   // Defect only; omitted if orb capacity is 0
   "orb_slots": 3,
   "orb_empty_slots": 1,

@@ -18,13 +18,23 @@ public static partial class McpMod
     //       who receives it (Creature = the monster itself / a single ally,
     //       IEnumerable = the player side)
     //   CreatureCmd.GainBlock(creature, amount, ...)
-    //   CardPileCmd.AddToCombatAndPreview<Slimed>(targets, pile, count, ...)
-    //     - generic arg = the status card class shuffled into player piles
-    // Amounts are int constants or monster stat getters (get_HissStrengthGain)
-    // converted to Decimal right before the call — the op_Implicit conversion
-    // is the capture point; getters are invoked on the live monster instance.
+    //   CardPileCmd.AddToCombatAndPreview<Slimed>(targets, pile, count, creator, position)
+    //     - generic arg = the status card class shuffled into player piles;
+    //       the pile and position enums are exported too, so a consumer can
+    //       place the cards exactly instead of assuming discard/bottom
     // Anything unrecognized simply yields no data (consumers fall back to
     // heuristics), and any reflection failure degrades to null.
+    //
+    // Amount recovery.  Every amount parameter is a Decimal, and C# reaches it
+    // three different ways, all of which must be read or the exported number is
+    // silently wrong rather than merely absent:
+    //   int expression -> op_Implicit(int32)          e.g. HissStrengthGain
+    //   0m / 1m / -1m  -> ldsfld Decimal.Zero/One/MinusOne
+    //   any other Nm   -> ldc.i4 N; newobj Decimal(int32)
+    // The tracked int is therefore cleared the moment IL does arithmetic on it
+    // (a computed amount reports null, which consumers flag), negated on `neg`
+    // so a stolen stat keeps its sign, and consumed on use so a later effect
+    // can never inherit an earlier one's number.
 
     private static readonly FieldInfo? _moveOnPerformField =
         typeof(MoveState).GetField("_onPerform", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -49,6 +59,134 @@ public static partial class McpMod
         }
     }
 
+    /// <summary>Effects found, plus the IL operand state, for one move scan.</summary>
+    private sealed class MoveFxScan
+    {
+        internal readonly List<Dictionary<string, object?>> Applies = new();
+        internal int? Block;
+        internal int? Heal;
+        /// <summary>Status/generated cards inserted, one entry per insert call.</summary>
+        internal readonly List<Dictionary<string, object?>> StatusCards = new();
+
+        /// <summary>Top-of-stack integer; null once arithmetic makes it unknown.</summary>
+        internal int? LastInt;
+        /// <summary>Integer/enum constants pushed for the call being built up.</summary>
+        internal readonly List<int?> IntArgs = new();
+        /// <summary>Constants belonging to the call currently being dispatched.</summary>
+        internal List<int?> CallArgs = new();
+
+        /// <summary>
+        /// Generic argument of the most recent `CreateCard&lt;T&gt;`, naming the card a
+        /// following `AddGeneratedCardToCombat` inserts.
+        /// </summary>
+        internal string? PendingCard;
+        /// <summary>
+        /// Generic argument of the most recent `ModelDb.Power&lt;T&gt;`, naming the
+        /// instanced power a following non-generic `PowerCmd.Apply` applies.
+        /// </summary>
+        internal string? PendingPower;
+        /// <summary>
+        /// Whether the creature expression evaluated so far in this argument run
+        /// was the monster's own `Creature`.
+        /// </summary>
+        internal bool LastCreatureIsSelf;
+        /// <summary>
+        /// The above, sampled when the amount was converted.
+        /// </summary>
+        /// <remarks>
+        /// Arguments evaluate left to right, and every apply overload orders
+        /// them target-then-amount-then-applier. Sampling at the amount is
+        /// therefore the last moment the flag still describes the TARGET; the
+        /// applier that follows is almost always `base.Creature` and would
+        /// otherwise make every apply look self-targeted.
+        /// </remarks>
+        internal bool TargetWasSelf;
+
+        private int? _pendingDecimal;
+        private bool _hasPendingDecimal;
+
+        internal bool IsEmpty =>
+            Applies.Count == 0 && Block == null && Heal == null && StatusCards.Count == 0;
+
+        internal void PushInt(int? value)
+        {
+            LastInt = value;
+            IntArgs.Add(value);
+        }
+
+        /// <summary>Forget the tracked int: an amount we cannot evaluate must
+        /// report as unknown rather than as one of its operands.</summary>
+        internal void PoisonInt()
+        {
+            LastInt = null;
+            IntArgs.Clear();
+        }
+
+        internal void Negate()
+        {
+            if (IntArgs.Count > 0 && IntArgs[^1] == LastInt)
+                IntArgs[^1] = -LastInt;
+            LastInt = -LastInt;
+        }
+
+        /// <summary>
+        /// Folds a binary integer operation over the two most recent pushes.
+        /// </summary>
+        /// <remarks>
+        /// The push list doubles as an operand stack, which is exact for the
+        /// straight-line arithmetic these amounts use (`BootUpStrGain * (2 -
+        /// StockAmount)`). Anything with an unknown operand, or with too few
+        /// operands to be sure what is being combined, poisons instead — a
+        /// computed amount must report as unknown, never as an operand.
+        /// </remarks>
+        internal void BinaryOp(Func<int, int, int?> combine)
+        {
+            if (IntArgs.Count < 2)
+            {
+                PoisonInt();
+                return;
+            }
+            int? right = IntArgs[^1];
+            int? left = IntArgs[^2];
+            IntArgs.RemoveRange(IntArgs.Count - 2, 2);
+            int? result = left is int l && right is int r ? combine(l, r) : null;
+            if (result == null)
+            {
+                PoisonInt();
+                return;
+            }
+            PushInt(result);
+        }
+
+        internal void SetAmount(int? amount)
+        {
+            _pendingDecimal = amount;
+            _hasPendingDecimal = true;
+            TargetWasSelf = LastCreatureIsSelf;
+        }
+
+        /// <summary>The amount for the effect being emitted, consuming it so the
+        /// next effect cannot inherit this one's number.</summary>
+        internal int? TakeAmount()
+        {
+            var amount = _hasPendingDecimal ? _pendingDecimal : null;
+            _pendingDecimal = null;
+            _hasPendingDecimal = false;
+            return amount;
+        }
+
+        /// <summary>Close the argument run: the constants collected so far belong
+        /// to the call now being dispatched.</summary>
+        internal void EndArgumentRun()
+        {
+            CallArgs = new List<int?>(IntArgs);
+            IntArgs.Clear();
+            // The next statement's arguments start fresh, so a loop body cannot
+            // inherit the previous iteration's applier.
+            LastCreatureIsSelf = false;
+        }
+    }
+
     private static Dictionary<string, object?>? ScanMoveEffects(MonsterModel monster, MoveState move)
     {
         if (_moveOnPerformField?.GetValue(move) is not Delegate onPerform)
@@ -66,34 +204,34 @@ public static partial class McpMod
         if (moveNext != null)
             bodies.Add(moveNext);
 
-        var applies = new List<Dictionary<string, object?>>();
-        int? block = null, heal = null;
-        string? statusCard = null;
-
+        var scan = new MoveFxScan();
         foreach (var body in bodies)
-            WalkForEffects(body, monster, applies, ref block, ref heal, ref statusCard);
+            WalkForEffects(body, monster, scan);
 
-        if (applies.Count == 0 && block == null && heal == null && statusCard == null)
+        if (scan.IsEmpty)
             return null;
         var fx = new Dictionary<string, object?>();
-        if (applies.Count > 0) fx["applies"] = applies;
-        if (block != null) fx["block"] = block;
-        if (heal != null) fx["heal"] = heal;
-        if (statusCard != null) fx["status_card"] = statusCard;
+        if (scan.Applies.Count > 0) fx["applies"] = scan.Applies;
+        if (scan.Block != null) fx["block"] = scan.Block;
+        if (scan.Heal != null) fx["heal"] = scan.Heal;
+        if (scan.StatusCards.Count > 0)
+        {
+            // "status_card" stays a bare class name for consumers that predate
+            // the placement export; "status" carries every insert the move
+            // makes, each with its own pile, count and position (Noisebot and
+            // Soul Fysh split one move across two different piles).
+            fx["status_card"] = scan.StatusCards[0]["card"];
+            fx["status"] = scan.StatusCards;
+        }
         return fx;
     }
 
-    private static void WalkForEffects(MethodBase method, MonsterModel monster,
-        List<Dictionary<string, object?>> applies, ref int? block, ref int? heal,
-        ref string? statusCard)
+    private static void WalkForEffects(MethodBase method, MonsterModel monster, MoveFxScan scan)
     {
         var il = method.GetMethodBody()?.GetILAsByteArray();
         if (il == null)
             return;
         var module = method.Module;
-
-        object? lastInt = null;        // int constant or int-returning getter
-        object? pendingDecimal = null; // lastInt at the moment of int->Decimal conversion
 
         int i = 0;
         while (i < il.Length)
@@ -116,17 +254,48 @@ public static partial class McpMod
             switch (op)
             {
                 case >= 0x16 and <= 0x1E:   // ldc.i4.0 .. ldc.i4.8
-                    lastInt = op - 0x16; i += 1; break;
-                case 0x1F: lastInt = (int)(sbyte)il[i + 1]; i += 2; break;      // ldc.i4.s
-                case 0x20: lastInt = BitConverter.ToInt32(il, i + 1); i += 5; break; // ldc.i4
+                    scan.PushInt(op - 0x16); i += 1; break;
+                case 0x1F: scan.PushInt((int)(sbyte)il[i + 1]); i += 2; break;      // ldc.i4.s
+                case 0x20: scan.PushInt(BitConverter.ToInt32(il, i + 1)); i += 5; break; // ldc.i4
+                case 0x65: scan.Negate(); i += 1; break;   // neg: `-SpikenAmount` is a steal
+                // Arithmetic is folded when both operands are known, so an
+                // amount computed from monster stats resolves exactly. Anything
+                // it cannot fold poisons the tracked value, which turns a
+                // computed amount into an explicit "unknown" the consumer flags
+                // instead of whichever operand happened to land last.
+                case 0x58 or 0xD6 or 0xD7: scan.BinaryOp((l, r) => l + r); i += 1; break;  // add[.ovf]
+                case 0x59 or 0xDA or 0xDB: scan.BinaryOp((l, r) => l - r); i += 1; break;  // sub[.ovf]
+                case 0x5A or 0xD8 or 0xD9: scan.BinaryOp((l, r) => l * r); i += 1; break;  // mul[.ovf]
+                case 0x5B or 0x5C: scan.BinaryOp((l, r) => r == 0 ? null : l / r); i += 1; break;  // div[.un]
+                case 0x5D or 0x5E: scan.BinaryOp((l, r) => r == 0 ? null : l % r); i += 1; break;  // rem[.un]
+                case 0x5F or 0x60 or 0x61 or 0x62 or 0x63 or 0x64:          // and/or/xor/shl/shr[.un]
+                    scan.PoisonInt(); i += 1; break;
+                // Control flow: operands collected on one path cannot be
+                // combined with those on another.
+                case (>= 0x2C and <= 0x37) or (>= 0x39 and <= 0x44):
+                    scan.PoisonInt(); i += InstructionLength(il, i); break;
+                case 0x7B:                   // ldfld: `_ritualGain`-style counters
+                {
+                    int tok = BitConverter.ToInt32(il, i + 1);
+                    scan.PushInt(ReadIntField(module, tok, monster));
+                    i += 5; break;
+                }
+                case 0x73:                   // newobj: `2m` is Decimal..ctor(int32)
+                {
+                    int tok = BitConverter.ToInt32(il, i + 1);
+                    if (IsDecimalIntCtor(module, tok))
+                        scan.SetAmount(scan.LastInt);
+                    else
+                        scan.IntArgs.Clear();
+                    i += 5; break;
+                }
                 case 0x28: case 0x6F:       // call / callvirt
                 {
                     int tok = BitConverter.ToInt32(il, i + 1);
                     MethodBase? mm = null;
                     try { mm = module.ResolveMethod(tok); } catch { }
                     if (mm != null)
-                        HandleCall(mm, monster, ref lastInt, ref pendingDecimal,
-                                   applies, ref block, ref heal, ref statusCard);
+                        HandleCall(mm, monster, scan);
                     i += 5; break;
                 }
                 case 0x7E:                   // ldsfld: Decimal.One-style constants
@@ -135,12 +304,15 @@ public static partial class McpMod
                     try
                     {
                         var f = module.ResolveField(tok);
-                        if (f.DeclaringType == typeof(decimal))
-                            pendingDecimal = f.Name switch
+                        if (f?.DeclaringType == typeof(decimal))
+                        {
+                            switch (f.Name)
                             {
-                                "One" => 1, "Zero" => 0, "MinusOne" => -1,
-                                _ => pendingDecimal,
-                            };
+                                case "One": scan.SetAmount(1); break;
+                                case "Zero": scan.SetAmount(0); break;
+                                case "MinusOne": scan.SetAmount(-1); break;
+                            }
+                        }
                     }
                     catch { }
                     i += 5; break;
@@ -155,7 +327,7 @@ public static partial class McpMod
                         0x21 or 0x23 => 9,                                        // ldc.i8 / ldc.r8
                         0x22 => 5,                                                // ldc.r4
                         >= 0x38 and <= 0x44 => 5,                                 // long branches
-                        0x72 or 0x73 or 0x7B or 0x7C or 0x7D or 0x7E or 0x7F or 0x80 or 0x81 or 0x82 => 5, // token ops
+                        0x72 or 0x7B or 0x7C or 0x7D or 0x7F or 0x80 or 0x81 or 0x82 => 5, // token ops
                         0x8C or 0x8D or 0x8F or 0xA3 or 0xA4 or 0xA5 or 0xC2 or 0xC6 or 0xD0 => 5, // more token ops
                         _ => 1,
                     };
@@ -164,77 +336,204 @@ public static partial class McpMod
         }
     }
 
-    private static void HandleCall(MethodBase mm, MonsterModel monster,
-        ref object? lastInt, ref object? pendingDecimal,
-        List<Dictionary<string, object?>> applies, ref int? block, ref int? heal,
-        ref string? statusCard)
+    private static bool IsDecimalIntCtor(Module module, int token)
+    {
+        try
+        {
+            var ctor = module.ResolveMethod(token);
+            var pars = ctor?.GetParameters();
+            return ctor?.DeclaringType == typeof(decimal)
+                && pars?.Length == 1 && pars[0].ParameterType == typeof(int);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void HandleCall(MethodBase mm, MonsterModel monster, MoveFxScan scan)
     {
         // int -> Decimal conversion marks "this int is about to be an amount"
         if (mm.Name == "op_Implicit" && mm.DeclaringType == typeof(decimal))
         {
-            pendingDecimal = lastInt;
+            scan.SetAmount(scan.LastInt);
             return;
         }
-        // Stat getters (get_HissStrengthGain) become the tracked int source;
-        // other getters (get_Creature, get_AttackSfx) must NOT clobber it.
+        // Stat getters (get_HissStrengthGain) are resolved against the live
+        // monster so ascension scaling comes through; other getters
+        // (get_Creature, get_AttackSfx) must NOT clobber the tracked int.
         if (mm.Name.StartsWith("get_") && mm is MethodInfo getter)
         {
+            // Which creature an expression produced decides who a non-generic
+            // apply targets, since that overload's parameter is always Creature.
+            if (getter.Name == "get_Creature")
+                scan.LastCreatureIsSelf = true;
             if (getter.ReturnType == typeof(int) && getter.GetParameters().Length == 0)
-                lastInt = getter;
+                scan.PushInt(InvokeIntGetter(getter, monster));
+            else
+                scan.IntArgs.Clear();
             return;
         }
 
-        string owner = mm.DeclaringType?.Name ?? "";
-        if (owner == "PowerCmd" && mm.Name == "Apply" && mm is MethodInfo applyMi
-            && applyMi.IsGenericMethod)
+        // `CreateCard<Dazed>(player)` names the card the next insert adds, and
+        // `ModelDb.Power<SandpitPower>()` names the instanced power the next
+        // non-generic apply applies. Both are the only static handle on values
+        // that are otherwise built at runtime.
+        if (mm is MethodInfo generic && generic.IsGenericMethod)
         {
-            var powerType = applyMi.GetGenericArguments().FirstOrDefault();
+            string? argument = generic.GetGenericArguments().FirstOrDefault()?.Name;
+            if (mm.Name == "CreateCard")
+                scan.PendingCard = argument;
+            else if (mm.Name == "Power" && mm.DeclaringType?.Name == "ModelDb")
+                scan.PendingPower = argument;
+        }
+
+        scan.EndArgumentRun();
+
+        string owner = mm.DeclaringType?.Name ?? "";
+        if (owner == "PowerCmd" && mm.Name == "Apply" && mm is MethodInfo applyMi)
+        {
             var pars = applyMi.GetParameters();
-            // Apply(ctx, Creature target, ...) buffs a single creature (the
-            // monster itself in practice); Apply(ctx, IEnumerable targets, ...)
-            // hits the player side.
-            bool playerSide = pars.Length > 1
-                && typeof(IEnumerable).IsAssignableFrom(pars[1].ParameterType)
-                && pars[1].ParameterType != typeof(string);
-            applies.Add(new Dictionary<string, object?>
+            string? powerName;
+            bool playerSide;
+            if (applyMi.IsGenericMethod)
             {
-                ["power"] = powerType?.Name,
+                powerName = applyMi.GetGenericArguments().FirstOrDefault()?.Name;
+                // Apply(ctx, Creature target, ...) buffs a single creature (the
+                // monster itself in practice); Apply(ctx, IEnumerable targets,
+                // ...) hits the player side.
+                playerSide = pars.Length > 1
+                    && typeof(IEnumerable).IsAssignableFrom(pars[1].ParameterType)
+                    && pars[1].ParameterType != typeof(string);
+            }
+            else
+            {
+                // Apply(ctx, PowerModel power, Creature target, ...) applies an
+                // instance built at runtime. Its target parameter is a single
+                // Creature either way, so who receives it is read from the
+                // expression that produced that creature: the monster's own
+                // `Creature` property means self, anything else (a loop
+                // variable over the move's targets) means the player side.
+                powerName = scan.PendingPower;
+                playerSide = !scan.TargetWasSelf;
+                scan.PendingPower = null;
+                if (powerName == null)
+                {
+                    scan.TakeAmount();
+                    return;
+                }
+            }
+            scan.Applies.Add(new Dictionary<string, object?>
+            {
+                ["power"] = powerName,
                 ["target"] = playerSide ? "player" : "self",
-                ["amount"] = ResolveAmount(pendingDecimal, monster),
+                ["amount"] = scan.TakeAmount(),
             });
         }
         else if (owner == "CreatureCmd" && mm.Name == "GainBlock")
         {
-            block = (block ?? 0) + (ResolveAmount(pendingDecimal, monster) ?? 0);
-            if (block == 0) block = null;
+            scan.Block = (scan.Block ?? 0) + (scan.TakeAmount() ?? 0);
+            if (scan.Block == 0) scan.Block = null;
         }
         else if (owner == "CreatureCmd" && mm.Name.Contains("Heal"))
         {
-            heal = (heal ?? 0) + (ResolveAmount(pendingDecimal, monster) ?? 0);
-            if (heal == 0) heal = null;
+            scan.Heal = (scan.Heal ?? 0) + (scan.TakeAmount() ?? 0);
+            if (scan.Heal == 0) scan.Heal = null;
         }
         else if (owner == "CardPileCmd" && mm.Name.StartsWith("AddToCombat")
                  && mm is MethodInfo cardMi && cardMi.IsGenericMethod)
         {
-            statusCard = cardMi.GetGenericArguments().FirstOrDefault()?.Name;
+            scan.StatusCards.Add(BuildStatusCard(
+                cardMi.GetGenericArguments().FirstOrDefault()?.Name, cardMi, scan.CallArgs, null));
+        }
+        else if (owner == "CardPileCmd" && mm.Name.StartsWith("AddGeneratedCard")
+                 && mm is MethodInfo generatedMi)
+        {
+            // One call inserts the single card the preceding `CreateCard<T>`
+            // built, so the count is fixed at one and the pile and position come
+            // from the call's own arguments.
+            scan.StatusCards.Add(BuildStatusCard(scan.PendingCard, generatedMi, scan.CallArgs, 1));
+            scan.PendingCard = null;
         }
     }
 
-    private static int? ResolveAmount(object? source, MonsterModel monster)
+    /// <summary>
+    /// Reads pile, count and position off an <c>AddToCombat*</c> call. The
+    /// int-like parameters are the trailing constants pushed for the call, so
+    /// they are matched positionally against the signature rather than by a
+    /// fixed argument index (the overloads differ in arity, and the optional
+    /// position argument is emitted at the call site).
+    /// </summary>
+    private static Dictionary<string, object?> BuildStatusCard(
+        string? cardName, MethodInfo cardMi, List<int?> intArgs, int? fixedCount)
     {
-        if (source is int n)
-            return n;
-        if (source is MethodInfo getter)
+        var card = new Dictionary<string, object?>
         {
-            try
-            {
-                object? target = getter.IsStatic ? null
-                    : getter.DeclaringType!.IsInstanceOfType(monster) ? monster : null;
-                if (getter.IsStatic || target != null)
-                    return getter.Invoke(target, null) as int?;
-            }
-            catch { }
+            ["card"] = cardName,
+            ["pile"] = null,
+            ["count"] = fixedCount,
+            ["position"] = null,
+        };
+        var intLike = cardMi.GetParameters()
+            .Where(p => p.ParameterType.IsEnum || p.ParameterType == typeof(int))
+            .ToList();
+        if (intLike.Count == 0 || intArgs.Count < intLike.Count)
+            return card;
+        // The call's own constants are the tail of the run; anything earlier
+        // belongs to a preceding expression.
+        var tail = intArgs.GetRange(intArgs.Count - intLike.Count, intLike.Count);
+        for (int p = 0; p < intLike.Count; p++)
+        {
+            var par = intLike[p];
+            int? value = tail[p];
+            if (value == null)
+                continue;
+            if (par.ParameterType == typeof(int))
+                card["count"] = value;
+            else if (par.ParameterType.Name == "PileType")
+                card["pile"] = Enum.GetName(par.ParameterType, value.Value);
+            else if (par.ParameterType.Name == "CardPilePosition")
+                card["position"] = Enum.GetName(par.ParameterType, value.Value);
         }
+        return card;
+    }
+
+    /// <summary>
+    /// The live value of an int field the move reads off its own monster.
+    /// </summary>
+    /// <remarks>
+    /// Some amounts are plain mutable counters rather than design properties
+    /// (`DevotedSculptor._ritualGain`). Reading the field is the same live-value
+    /// resolution the stat getters already get; a field on any other object is
+    /// unknown, which poisons the amount rather than inventing one.
+    /// </remarks>
+    private static int? ReadIntField(Module module, int token, MonsterModel monster)
+    {
+        try
+        {
+            var field = module.ResolveField(token);
+            if (field == null || field.FieldType != typeof(int))
+                return null;
+            if (!field.DeclaringType!.IsInstanceOfType(monster))
+                return null;
+            return field.GetValue(monster) as int?;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static int? InvokeIntGetter(MethodInfo getter, MonsterModel monster)
+    {
+        try
+        {
+            object? target = getter.IsStatic ? null
+                : getter.DeclaringType!.IsInstanceOfType(monster) ? monster : null;
+            if (getter.IsStatic || target != null)
+                return getter.Invoke(target, null) as int?;
+        }
+        catch { }
         return null;
     }
 }

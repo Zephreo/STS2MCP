@@ -1322,6 +1322,7 @@ public static partial class McpMod
             state["discard_pile"] = BuildPileCardList(combatState.DiscardPile.Cards, PileType.Discard);
             state["exhaust_pile"] = BuildPileCardList(combatState.ExhaustPile.Cards, PileType.Exhaust);
         state["combat_card_generation_pool"] = BuildCombatCardGenerationPool(player);
+        state["combat_transform_pools"] = BuildCombatTransformPools(player);
         state["combat_power_generation_pool"] = BuildCharacterGenerationPool(player, card => card.Type == CardType.Power);
         state["combat_common_generation_pool"] = BuildCharacterGenerationPool(player, card => card.Rarity == CardRarity.Common);
         state["combat_colorless_generation_pool"] = BuildColorlessGenerationPool(player);
@@ -1361,6 +1362,37 @@ public static partial class McpMod
                     player.RunState.CardMultiplayerConstraint))
             .Select(card => SafeGetText(() => card.Title) ?? card.Id.Entry)
             .ToList();
+    }
+
+    // Exact per-card domains consumed by CardCmd.TransformToRandom in combat.
+    // The eligible pool depends on the original card's pool, rarity and ID, so
+    // the broader combat-generation pool cannot reconstruct Entropy's roll.
+    private static Dictionary<string, List<string>> BuildCombatTransformPools(Player player)
+    {
+        var pools = new Dictionary<string, List<string>>();
+        var combatState = player.PlayerCombatState;
+        if (combatState == null)
+            return pools;
+
+        foreach (var card in combatState.AllCards)
+        {
+            string id = card.Id.Entry.ToUpperInvariant();
+            if (pools.ContainsKey(id))
+                continue;
+
+            try
+            {
+                pools[id] = CardFactory.GetDefaultTransformationOptions(card, true)
+                    .Select(option => SafeGetText(() => option.Title) ?? option.Id.Entry)
+                    .ToList();
+            }
+            catch
+            {
+                // An intrinsically untransformable/modded card has no legal
+                // Entropy result; omit only that domain, never the state.
+            }
+        }
+        return pools;
     }
 
     private static List<string> BuildCharacterGenerationPool(Player player, Func<CardModel, bool> predicate)
@@ -1574,6 +1606,7 @@ public static partial class McpMod
             ["name"] = SafeGetText(() => monster?.Title),
             ["hp"] = creature.CurrentHp,
             ["max_hp"] = creature.MaxHp,
+            ["hp_infinite"] = creature.HpDisplay.IsInfinite(),
             ["block"] = creature.Block,
             ["status"] = BuildPowersState(creature)
         };

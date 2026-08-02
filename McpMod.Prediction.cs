@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
@@ -46,14 +47,15 @@ public static partial class McpMod
 
             var states = new List<Dictionary<string, object?>>();
             bool hasConditionalSnapshots = false;
+            bool hasWeightSnapshots = false;
             foreach (var state in machine.States.Values)
             {
                 Dictionary<string, object?>? serialized = state switch
                 {
                     MoveState move => BuildMoveMachineState(monster, creature, move),
-                    RandomBranchState random => BuildRandomMachineState(random),
+                    RandomBranchState random => BuildRandomMachineState(random, ref hasWeightSnapshots),
                     ConditionalBranchState conditional =>
-                        BuildConditionalMachineState(monster, conditional, ref hasConditionalSnapshots),
+                        BuildConditionalMachineState(conditional, ref hasConditionalSnapshots),
                     _ => null,
                 };
                 if (serialized == null)
@@ -77,11 +79,10 @@ public static partial class McpMod
                 ["rng_seed"] = rng.Seed,
                 ["rng_counter"] = rng.Counter,
                 ["conditional_values_are_snapshots"] = hasConditionalSnapshots,
-                // Two-Tailed Rat is the shipped machine whose branch weights
-                // depend on mutable CanSummon state. Other shipped lambdas are
-                // constants; modded dynamic lambdas cannot be distinguished
-                // generically from constants by reflection.
-                ["random_weights_are_snapshots"] = monster.GetType().Name == "TwoTailedRat",
+                // Set when a weight lambda was seen to read live state, rather
+                // than for a named monster: any shipped or modded machine whose
+                // weights move is detected the same way.
+                ["random_weights_are_snapshots"] = hasWeightSnapshots,
                 ["states"] = states,
             };
         }
@@ -109,7 +110,7 @@ public static partial class McpMod
         return state;
     }
 
-    private static Dictionary<string, object?> BuildRandomMachineState(RandomBranchState random)
+    private static Dictionary<string, object?> BuildRandomMachineState(RandomBranchState random, ref bool hasSnapshots)
     {
         var branches = new List<Dictionary<string, object?>>(random.States.Count);
         foreach (var branch in random.States)
@@ -117,6 +118,9 @@ public static partial class McpMod
             float weight;
             try { weight = branch.GetWeight(); }
             catch { weight = 0f; }
+            // A weight that reads live state cannot be represented by the
+            // single sample taken here; say so instead of freezing it silently.
+            hasSnapshots |= IsDynamicWeight(branch.weightLambda);
             branches.Add(new Dictionary<string, object?>
             {
                 ["state"] = branch.stateId,
@@ -135,7 +139,6 @@ public static partial class McpMod
     }
 
     private static Dictionary<string, object?> BuildConditionalMachineState(
-        MegaCrit.Sts2.Core.Models.MonsterModel monster,
         ConditionalBranchState conditional,
         ref bool hasSnapshots)
     {
@@ -152,7 +155,10 @@ public static partial class McpMod
                 bool enabled;
                 try { enabled = Convert.ToSingle(evaluate.Invoke(value, null)) > 0f; }
                 catch { enabled = false; }
-                var condition = BuildCondition(monster, conditional.Id, id, enabled, out bool isSnapshot);
+                var lambda = valueType
+                    .GetField("_conditionalLambda", BindingFlags.NonPublic | BindingFlags.Instance)?
+                    .GetValue(value) as Delegate;
+                var condition = BuildCondition(lambda, branches.Count, enabled, out bool isSnapshot);
                 hasSnapshots |= isSnapshot;
                 branches.Add(new Dictionary<string, object?>
                 {
@@ -170,69 +176,144 @@ public static partial class McpMod
         };
     }
 
+    /// <summary>
+    /// Translates one branch predicate into the re-evaluable condition language.
+    /// </summary>
+    /// <remarks>
+    /// The comparison and threshold always come from the predicate's own IL.
+    /// The member-to-quantity mapping below is the part that cannot: it records
+    /// what a mutable monster field counts, which is established in the move
+    /// that writes it, not in the predicate that reads it. Each entry cites the
+    /// source that justifies it. An unrecognized predicate falls through to a
+    /// snapshot, which the consumer already treats as inexact.
+    /// </remarks>
     private static Dictionary<string, object?> BuildCondition(
-        MegaCrit.Sts2.Core.Models.MonsterModel monster,
-        string branchId,
-        string targetId,
-        bool enabled,
-        out bool isSnapshot)
+        Delegate? lambda, int branchIndex, bool enabled, out bool isSnapshot)
     {
         isSnapshot = false;
-        string monsterType = monster.GetType().Name;
+        var scan = ScanPredicate(lambda?.Method);
+        bool negated = IsNegated(scan);
 
-        // Slot/front/alone branches are fixed when the encounter constructs
-        // the monster and can safely remain constants for the whole search.
-        if (branchId == "INIT_MOVE")
+        // Encounter-fixed placement: the slot a creature occupies, and the
+        // `IsFront` / `IsAlone` flags the encounter sets before combat, never
+        // change once the monster exists. The sampled value is therefore exact
+        // for the whole search rather than a snapshot of moving state.
+        if (ReadsAny(scan, ".get_SlotName", ".get_IsFront", ".get_IsAlone"))
             return Condition("constant", ("value", enabled));
 
-        if (monsterType == "FrogKnight" && branchId == "HALF_HEALTH")
+        // `Creature.HasPower<T>()`: the generic argument names the power.
+        if (scan.Reads("Creature.HasPower") && scan.GenericArgs.Count > 0)
+            return Negate(Condition("owner_power", ("power_id", PowerIdFromClass(scan.GenericArgs[0]))), negated);
+
+        // FrogKnight: branch 0 is `HasBeetleCharged || CurrentHp >= MaxHp / 2`
+        // and branch 1 is its exact complement, `!HasBeetleCharged && CurrentHp
+        // < MaxHp / 2`. Emitting the complement as `not` follows the source's
+        // own branch order, rather than guessing how the compiler lowered a
+        // short-circuit into branch opcodes. C# integer division floors, so the
+        // threshold is floor(MaxHp/denominator), not the exact rational.
+        if (scan.Reads("FrogKnight.get_HasBeetleCharged"))
         {
+            int denominator = scan.Ints.FirstOrDefault(value => value > 1);
+            if (denominator <= 1)
+                denominator = 2;
             var charged = Condition("move_seen", ("move_id", "BEETLE_CHARGE"));
-            var hp = Condition("owner_hp_fraction",
-                ("cmp", targetId == "TONGUE_LASH" ? "ge" : "lt"),
-                ("numerator", 1), ("denominator", 2));
-            return targetId == "TONGUE_LASH"
-                ? Condition("or", ("args", new[] { charged, hp }))
-                : Condition("and", ("args", new[] { Condition("not", ("arg", charged)), hp }));
+            var half = Condition("owner_hp_fraction",
+                ("cmp", "ge"), ("numerator", 1), ("denominator", denominator), ("floor", true));
+            var either = Condition("or", ("args", new[] { charged, half }));
+            return branchIndex == 0 ? either : Condition("not", ("arg", either));
         }
 
-        if (monsterType == "LivingShield")
-            return Condition("living_allies", ("cmp", targetId == "SHIELD_SLAM_MOVE" ? "gt" : "eq"), ("value", 0));
+        // Living-teammate counts. `GetTeammatesOf` returns the whole side, so a
+        // count includes the owner unless its LINQ predicate rejects it; the
+        // consumer counts other living enemies, and `include_self` tells it
+        // which of the two the threshold was written against. The comparison and
+        // constant may sit one call deeper, in the bool property the predicate
+        // reads.
+        var inlined = InlineMonsterCall(scan);
+        if (scan.Reads("CombatState.GetTeammatesOf") || scan.Reads("ICombatState.GetTeammatesOf")
+            || inlined?.Reads("CombatState.GetTeammatesOf") == true
+            || inlined?.Reads("ICombatState.GetTeammatesOf") == true)
+            return BuildAllyCountCondition(scan, inlined, negated, ref isSnapshot);
 
-        if (monsterType == "Fabricator")
-            return Condition("living_allies", ("cmp", targetId == "RAND" ? "lt" : "ge"), ("value", 4));
+        // Counters a move increments once per performance, so the machine's own
+        // move log reproduces them exactly.
+        //   KnowledgeDemon._curseOfKnowledgeCounter -> CurseOfKnowledgeMove
+        //   TestSubject.Respawns                    -> RespawnMove
+        if (scan.Reads("KnowledgeDemon._curseOfKnowledgeCounter"))
+            return BuildMoveCountCondition(scan, negated, "CURSE_OF_KNOWLEDGE_MOVE", ref isSnapshot);
+        if (scan.Reads("TestSubject.get_Respawns"))
+            return BuildMoveCountCondition(scan, negated, "RESPAWN_MOVE", ref isSnapshot);
 
-        if (monsterType == "Ovicopter")
-            return Condition("living_allies", ("cmp", targetId == "LAY_EGGS_MOVE" ? "le" : "gt"), ("value", 3));
-
-        if (monsterType == "Queen")
+        // Queen.HasAmalgamDied is latched in AfterDeath when a TorchHeadAmalgam
+        // dies, so "not yet died" is "an amalgam is still alive".
+        if (scan.Reads("Queen.get_HasAmalgamDied"))
         {
             var alive = Condition("monster_alive", ("entity_prefix", "TORCH_HEAD_AMALGAM"));
-            return targetId == "BURN_BRIGHT_FOR_ME_MOVE" ? alive : Condition("not", ("arg", alive));
+            return negated ? alive : Condition("not", ("arg", alive));
         }
 
-        if (monsterType == "KnowledgeDemon")
-            return Condition("move_count", ("move_id", "CURSE_OF_KNOWLEDGE_MOVE"),
-                ("cmp", targetId == "CURSE_OF_KNOWLEDGE_MOVE" ? "lt" : "ge"), ("value", 3));
-
-        if (monsterType == "TestSubject")
-            return Condition("move_count", ("move_id", "RESPAWN_MOVE"),
-                ("cmp", targetId == "MULTI_CLAW_MOVE" ? "lt" : "ge"), ("value", 2));
-
-        if (monsterType == "LagavulinMatriarch")
-        {
-            var asleep = Condition("owner_power", ("power_id", "ASLEEP"));
-            return targetId == "SLEEP_MOVE" ? asleep : Condition("not", ("arg", asleep));
-        }
-
-        if (monsterType == "SlumberingBeetle")
-        {
-            var slumber = Condition("owner_power", ("power_id", "SLUMBER"));
-            return targetId == "SNORE_MOVE" ? slumber : Condition("not", ("arg", slumber));
-        }
+        // BowlbugRock.IsOffBalance is set by ImbalancedPower when the owner's
+        // own attack is fully blocked, which the consumer already tracks as the
+        // pending Imbalanced stun.
+        if (scan.Reads("BowlbugRock.get_IsOffBalance"))
+            return Negate(Condition("owner_power", ("power_id", "IMBALANCED_STUN")), negated);
 
         isSnapshot = true;
         return Condition("snapshot", ("value", enabled));
+    }
+
+    private static Dictionary<string, object?> BuildAllyCountCondition(
+        PredicateScan scan, PredicateScan? inlined, bool negated, ref bool isSnapshot)
+    {
+        // The predicate owns the comparison when it makes one itself
+        // (`GetAllyCount() > 0`); otherwise it just reads a bool property and
+        // the comparison belongs to that property's body.
+        bool comparesDirectly = scan.Comparisons.Any(comparison => comparison != "ceq")
+            || (scan.Comparisons.Count > 0 && !TestsBoolean(scan));
+        var source = comparesDirectly || inlined == null ? scan : inlined;
+        // An inner `<=` is itself a negated `>`, and an outer `!` inverts that
+        // again, so the two compose.
+        bool effectiveNegation = ReferenceEquals(source, scan) ? negated : IsNegated(source) ^ negated;
+
+        string? cmp = SourceComparison(source, effectiveNegation);
+        int? value = Threshold(source);
+        if (cmp == null || value == null)
+        {
+            isSnapshot = true;
+            return Condition("snapshot", ("value", false));
+        }
+        return Condition("living_allies",
+            ("cmp", cmp), ("value", value.Value), ("include_self", !CountExcludesSelf(scan, inlined)));
+    }
+
+    private static Dictionary<string, object?> BuildMoveCountCondition(
+        PredicateScan scan, bool negated, string moveId, ref bool isSnapshot)
+    {
+        string? cmp = SourceComparison(scan, negated);
+        int? value = Threshold(scan);
+        if (cmp == null || value == null)
+        {
+            isSnapshot = true;
+            return Condition("snapshot", ("value", false));
+        }
+        return Condition("move_count", ("move_id", moveId), ("cmp", cmp), ("value", value.Value));
+    }
+
+    private static Dictionary<string, object?> Negate(Dictionary<string, object?> condition, bool negated) =>
+        negated ? Condition("not", ("arg", condition)) : condition;
+
+    /// <summary>`AsleepPower` -&gt; `ASLEEP`, matching the consumer's power ids.</summary>
+    private static string PowerIdFromClass(string className)
+    {
+        string stripped = className.EndsWith("Power") ? className[..^"Power".Length] : className;
+        var id = new System.Text.StringBuilder(stripped.Length + 4);
+        for (int i = 0; i < stripped.Length; i++)
+        {
+            if (i != 0 && char.IsUpper(stripped[i]))
+                id.Append('_');
+            id.Append(char.ToUpperInvariant(stripped[i]));
+        }
+        return id.ToString();
     }
 
     private static Dictionary<string, object?> Condition(
