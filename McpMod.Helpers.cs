@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -7,6 +8,7 @@ using System.Text.Json;
 using Godot;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.HoverTips;
+using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
@@ -312,6 +314,89 @@ public static partial class McpMod
     {
         var mapScreen = NMapScreen.Instance;
         return mapScreen != null && (mapScreen.IsOpen || IsNodeVisible(mapScreen));
+    }
+
+    /// <summary>
+    /// Is the run in the middle of a room transition?
+    /// </summary>
+    /// <remarks>
+    /// RunManager wraps every room change in a NetLoadingHandle, which raises
+    /// NetService.IsGameLoading for the whole scope: map travel
+    /// (EnterMapPointInternal), an event option that pushes a combat room
+    /// (EnterRoomWithoutExitingCurrentRoom - the "Fight" options), act changes
+    /// and run start. The singleplayer service tracks the flag too, so this is
+    /// the one signal that covers every path.
+    ///
+    /// It is needed because RunManager.EnterRoomInternal pushes the destination
+    /// onto the room stack BEFORE awaiting its Enter, so a state read during a
+    /// transition sees the new room already current while none of its managers
+    /// have initialized - and before that push, the SOURCE screen is still
+    /// current and still looks actionable even though its choice is already
+    /// executing.
+    /// </remarks>
+    private static bool IsRunTransitionInFlight()
+    {
+        try
+        {
+            return MegaCrit.Sts2.Core.Runs.RunManager.Instance.IsInProgress
+                && MegaCrit.Sts2.Core.Runs.RunManager.Instance.NetService.IsGameLoading;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Is a map travel already resolving?
+    /// </summary>
+    /// <remarks>
+    /// NMapScreen.IsTraveling is set the instant a destination is finalized
+    /// (TravelToMapCoord) and is cleared only after RunManager has finished
+    /// entering the destination room. Throughout that window the map screen is
+    /// still visible and its points still report MapPointState.Travelable, so
+    /// anything keying off those two alone happily offers - and takes - a
+    /// second travel into a room that is still loading.
+    /// </remarks>
+    private static bool IsMapTravelInFlight()
+    {
+        try
+        {
+            var mapScreen = NMapScreen.Instance;
+            return mapScreen != null && IsLiveNode(mapScreen) && mapScreen.IsTraveling;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The map points the player could actually click right now, in column order.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors the game's own NMapPoint.IsTravelable gate exactly. MapPointState
+    /// is only the topology flag - the game's own comment calls it "adjacent
+    /// node you can travel to IF you have completed the room" - and it stays
+    /// Travelable for the whole room. NMapScreen.IsTravelEnabled is the half
+    /// that says the room IS finished: TravelToMapCoord clears it, and every
+    /// room turns it back on when it completes (NMapRoom/NMerchantRoom on load,
+    /// NRestSiteRoom/NTreasureRoom/NEventRoom/NCrystalSphereScreen on proceed,
+    /// CombatManager after a win). Gating on it therefore keeps the
+    /// lingering-map escape hatches in the state builder working while closing
+    /// the room-transition window.
+    /// </remarks>
+    internal static List<NMapPoint> GetTravelableMapPoints(NMapScreen mapScreen)
+    {
+        if (mapScreen.IsTraveling)
+            return new List<NMapPoint>();
+
+        return FindAll<NMapPoint>(mapScreen)
+            .Where(mp => mp.Point != null
+                         && (mapScreen.IsDebugTravelEnabled
+                             || (mapScreen.IsTravelEnabled && mp.State == MapPointState.Travelable)))
+            .OrderBy(mp => mp.Point!.coord.col)
+            .ToList();
     }
 
     private static bool IsControlVisibleInTree(NClickableControl? control)

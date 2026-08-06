@@ -16,6 +16,7 @@ public enum PileType { None, Draw, Hand, Discard, Exhaust }
 public enum CardPilePosition { None, Bottom, Top, Random }
 
 public class StrengthPower : PowerModel { }
+public class DexterityPower : PowerModel { }
 public class WeakPower : PowerModel { }
 public class FrailPower : PowerModel { }
 public class IntangiblePower : PowerModel { }
@@ -41,6 +42,12 @@ public static class PowerCmd
     public static Task Apply(PlayerChoiceContext ctx, PowerModel power, Creature target, decimal amount,
         Creature? applier, CardModel? source, bool silent = false) => Task.CompletedTask;
 }
+
+/// <summary>A monster class a `Where` predicate can type-test, as `Guardbot` does.</summary>
+public class Fabricator : MegaCrit.Sts2.Core.Models.MonsterModel { }
+
+/// <summary>A second one, for the ambiguous two-test case.</summary>
+public class Noisebot : MegaCrit.Sts2.Core.Models.MonsterModel { }
 
 public static class CreatureCmd
 {

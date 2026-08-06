@@ -64,6 +64,22 @@ namespace STS2_MCP
             Check($"{label} position", insert["position"], position);
         }
 
+        private static void CheckAllyBlock(string label, string methodName, int index,
+            object? amount, object? monster)
+        {
+            var scan = ScanBody(methodName);
+            if (scan.AllyBlock.Count <= index)
+            {
+                Check($"{label} ally_block[{index}]", $"missing (found {scan.AllyBlock.Count})", "present");
+                return;
+            }
+            var grant = scan.AllyBlock[index];
+            Check($"{label} amount", grant["amount"], amount);
+            Check($"{label} monster", grant["monster"], monster);
+            // Whatever else it did, it did not credit the Block to the mover.
+            Check($"{label} not self block", scan.Block, null);
+        }
+
         private static void CheckMoveEffects()
         {
             Console.WriteLine();
@@ -86,6 +102,31 @@ namespace STS2_MCP
             CheckApply("unknowable", nameof(MoveBodies.UnknowableAmount), 0, "StrengthPower", "self", null);
 
             Check("block amount", ScanBody(nameof(MoveBodies.BlockAmount)).Block, 5);
+            Check("block amount is self only",
+                ScanBody(nameof(MoveBodies.BlockAmount)).AllyBlock.Count, 0);
+
+            // Block aimed at somebody else. Crediting it to the mover gave the
+            // Guardbot 15 Block a turn it never has while the Fabricator's real
+            // Block went missing, and nothing flagged it — the move's own
+            // DefendIntent was satisfied by the wrong creature's number.
+            CheckAllyBlock("guardbot", nameof(MoveBodies.AllyBlockForNamedMonster), 0, 15, "Fabricator");
+            CheckAllyBlock("unfiltered ally block", nameof(MoveBodies.AllyBlockWithoutFilter), 0, 15, null);
+            CheckAllyBlock("ambiguous filter", nameof(MoveBodies.AllyBlockWithAmbiguousFilter), 0, 15, null);
+
+            // A self-block surrounded by applies stays a self-block: the
+            // creature expression is sampled at the amount, so the applier
+            // argument that follows cannot flip it.
+            Check("self block between applies",
+                ScanBody(nameof(MoveBodies.DebuffThenSelfBlockThenBuff)).Block, 8);
+            Check("self block between applies is not ally",
+                ScanBody(nameof(MoveBodies.DebuffThenSelfBlockThenBuff)).AllyBlock.Count, 0);
+
+            // A chain that leaves the monster (`Creature.CombatState.Players
+            // .Count`) resolves against the live objects it reaches, so a
+            // player-count-scaled heal exports its product rather than flagging.
+            // The stub combat holds two players.
+            Check("player-count heal", ScanBody(nameof(MoveBodies.PlayerCountScaledHeal)).Heal, 60);
+            Check("stat x player-count heal", ScanBody(nameof(MoveBodies.StatTimesPlayerCountHeal)).Heal, 30);
 
             // Placement, including a move that splits across two piles.
             CheckInsert("discard insert", nameof(MoveBodies.DiscardInsert), 0, "Dazed", 3, "Discard", "Bottom");
@@ -95,6 +136,19 @@ namespace STS2_MCP
             CheckInsert("generated draw", nameof(MoveBodies.SplitGeneratedInserts), 1,
                 "Dazed", 1, "Draw", "Random");
             CheckInsert("getter count", nameof(MoveBodies.GetterCountInsert), 0, "Beckon", 4, "Discard", "Bottom");
+
+            // Which of the attacker's own powers move its damage. The intent
+            // label bakes the current value, so a consumer applies the rest as
+            // a delta — and without this it has no way to know Dexterity is one
+            // of them for exactly one attack in the game.
+            var monster = new MoveBodies();
+            Check("dexterity-scaled damage",
+                string.Join(",", PowersScalingDamage(monster.DamageScaledByOwnDexterity()) ?? new List<string>()),
+                "DexterityPower");
+            Check("counter damage scales with nothing",
+                PowersScalingDamage(monster.DamageFromAMutableCounter()), null);
+            Check("constant damage scales with nothing",
+                PowersScalingDamage(monster.DamageFromAConstant(7)), null);
 
             // The non-generic overload: its power comes from the preceding
             // ModelDb.Power<T>, and self versus player from the creature

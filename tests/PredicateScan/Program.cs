@@ -20,12 +20,24 @@ public class Creature
     public int MaxHp => 379;
     public string SlotName => "first";
     public bool HasPower<T>() => false;
+
+    /// <summary>What `TheForgotten.DreadDamage` reads to scale its attack.</summary>
+    public int GetPowerAmount<T>() => 0;
     public CombatState CombatState { get; } = new CombatState();
+
+    /// <summary>What a `Where(c =&gt; c.Monster is Fabricator)` filter tests.</summary>
+    public MegaCrit.Sts2.Core.Models.MonsterModel? Monster => null;
 }
 
 public class CombatState
 {
     public IReadOnlyList<Creature> GetTeammatesOf(Creature creature) => Array.Empty<Creature>();
+
+    /// <summary>The mover's own side, which is what `Guardbot.GuardMove` filters.</summary>
+    public IReadOnlyList<Creature> Enemies { get; } = Array.Empty<Creature>();
+
+    /// <summary>Two players, so a per-player amount differs from its multiplier.</summary>
+    public IReadOnlyList<Player> Players { get; } = new[] { new Player(), new Player() };
 }
 
 public class AsleepPower { }

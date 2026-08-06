@@ -48,7 +48,22 @@ public static partial class McpMod
             var states = new List<Dictionary<string, object?>>();
             bool hasConditionalSnapshots = false;
             bool hasWeightSnapshots = false;
-            foreach (var state in machine.States.Values)
+            // `States` is built from the list the monster passed to the machine's
+            // constructor, which does NOT necessarily contain the machine's own
+            // cursor or its initial node. Two shipped shapes escape it:
+            //
+            //   - `PhantasmalGardener` and `Myte` pass their `INIT_MOVE`
+            //     conditional as the initial state without ever adding it to the
+            //     list, so the graph's entry point is missing.
+            //   - `CreatureCmd.Stun` builds a synthetic `MoveState("STUNNED")`
+            //     and installs it with `SetMoveImmediate`, so a stunned monster's
+            //     cursor names a state the list never had.
+            //
+            // Either one leaves the consumer unable to resolve an id it was
+            // handed, which costs it the ENTIRE machine and drops that enemy to
+            // the intent-DB fallback. Both nodes are perfectly serializable, so
+            // they are appended rather than left dangling.
+            foreach (var state in machine.States.Values.Concat(new[] { initial, current }).Distinct())
             {
                 Dictionary<string, object?>? serialized = state switch
                 {
@@ -59,6 +74,9 @@ public static partial class McpMod
                     _ => null,
                 };
                 if (serialized == null)
+                    continue;
+                // A monster that DID list its cursor must not export it twice.
+                if (states.Any(existing => Equals(existing["id"], serialized["id"])))
                     continue;
                 states.Add(serialized);
             }

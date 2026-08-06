@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 
 // Move bodies copied from the decompiled monsters, reduced to the calls the
@@ -16,6 +17,7 @@ public sealed class MoveBodies : MegaCrit.Sts2.Core.Models.MonsterModel
     private int StockAmount => 1;
     private int SpikenAmount => 2;
     private int WitherAmount => 4;
+    private int SiphonHeal => 15;
 
     private IReadOnlyList<Creature> Targets => Array.Empty<Creature>();
 
@@ -59,6 +61,17 @@ public sealed class MoveBodies : MegaCrit.Sts2.Core.Models.MonsterModel
         await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(), base.Creature,
             _ritualGain, base.Creature, null);
 
+    /// <summary>
+    /// `KnowledgeDemon.PonderMove`: a heal scaled by the run's player count,
+    /// reached through a property chain that leaves the monster entirely.
+    /// </summary>
+    public async Task PlayerCountScaledHeal(IReadOnlyList<Creature> targets) =>
+        await CreatureCmd.Heal(base.Creature, 30 * base.Creature.CombatState.Players.Count);
+
+    /// <summary>`WaterfallGiant.SiphonMove`: the same, over a stat getter.</summary>
+    public async Task StatTimesPlayerCountHeal(IReadOnlyList<Creature> targets) =>
+        await CreatureCmd.Heal(base.Creature, SiphonHeal * base.Creature.CombatState.Players.Count);
+
     /// <summary>An amount no static read can reach must report as unknown.</summary>
     public async Task UnknowableAmount(IReadOnlyList<Creature> targets)
     {
@@ -70,6 +83,53 @@ public sealed class MoveBodies : MegaCrit.Sts2.Core.Models.MonsterModel
     /// <summary>`Nibbit.SliceMove`: block from a stat getter.</summary>
     public async Task BlockAmount(IReadOnlyList<Creature> targets) =>
         await CreatureCmd.GainBlock(base.Creature, 5, ValueProp.Move, null);
+
+    /// <summary>
+    /// `Guardbot.GuardMove`: the one shipped move that shields somebody else.
+    /// The recipient class is readable off the `Where` predicate's type test.
+    /// </summary>
+    public async Task AllyBlockForNamedMonster(IReadOnlyList<Creature> targets)
+    {
+        List<Creature> bots = base.Creature.CombatState.Enemies
+            .Where((Creature c) => c.Monster is Fabricator).ToList();
+        foreach (Creature bot in bots)
+            await CreatureCmd.GainBlock(bot, 15m, ValueProp.Move, null);
+    }
+
+    /// <summary>
+    /// A non-self gain with no filter to read: the amount is still exported,
+    /// but with no recipient, which the consumer must treat as unknown rather
+    /// than crediting it to the mover or to a guess.
+    /// </summary>
+    public async Task AllyBlockWithoutFilter(IReadOnlyList<Creature> targets)
+    {
+        foreach (Creature ally in targets)
+            await CreatureCmd.GainBlock(ally, 15m, ValueProp.Move, null);
+    }
+
+    /// <summary>
+    /// A filter testing two monster classes says nothing: which one selects the
+    /// recipient is not something a linear read can decide.
+    /// </summary>
+    public async Task AllyBlockWithAmbiguousFilter(IReadOnlyList<Creature> targets)
+    {
+        List<Creature> bots = base.Creature.CombatState.Enemies
+            .Where((Creature c) => c.Monster is Fabricator || c.Monster is Noisebot).ToList();
+        foreach (Creature bot in bots)
+            await CreatureCmd.GainBlock(bot, 15m, ValueProp.Move, null);
+    }
+
+    /// <summary>
+    /// `TheForgotten.MiasmaMove`: a self-block between two applies. The filter
+    /// state left by any earlier lambda must not make this one look ally-bound.
+    /// </summary>
+    public async Task DebuffThenSelfBlockThenBuff(IReadOnlyList<Creature> targets)
+    {
+        await PowerCmd.Apply<WeakPower>(new ThrowingPlayerChoiceContext(), targets, -2m, base.Creature, null);
+        await CreatureCmd.GainBlock(base.Creature, 8m, ValueProp.Move, null);
+        await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(), base.Creature,
+            2m, base.Creature, null);
+    }
 
     /// <summary>`Chomper.ScreechMove`: a bottom-of-discard status insert.</summary>
     public async Task DiscardInsert(IReadOnlyList<Creature> targets) =>
@@ -110,6 +170,23 @@ public sealed class MoveBodies : MegaCrit.Sts2.Core.Models.MonsterModel
         foreach (Creature target in targets)
             await PowerCmd.Apply(new ThrowingPlayerChoiceContext(), dampen, target, 1m, base.Creature, null);
     }
+
+    // --- Damage calcs, as `SingleAttackIntent` receives them ---
+
+    /// <summary>`TheForgotten.DreadDamage`: base plus the attacker's own Dexterity.</summary>
+    private int DreadDamage => 13 + base.Creature.GetPowerAmount<DexterityPower>();
+
+    /// <summary>`WaterfallGiant.CurrentPressureGunDamage`: a plain mutable counter.</summary>
+    private int CurrentPressureGunDamage => 9;
+
+    /// <summary>`SingleAttackIntent(() =&gt; DreadDamage)`.</summary>
+    public Func<decimal> DamageScaledByOwnDexterity() => () => DreadDamage;
+
+    /// <summary>`SingleAttackIntent(() =&gt; CurrentPressureGunDamage)`: no power read.</summary>
+    public Func<decimal> DamageFromAMutableCounter() => () => CurrentPressureGunDamage;
+
+    /// <summary>`SingleAttackIntent(int)`, which wraps a captured constant.</summary>
+    public Func<decimal> DamageFromAConstant(int damage) => () => damage;
 
     /// <summary>`Aeonglass`: the insert count is itself a stat getter.</summary>
     public async Task GetterCountInsert(IReadOnlyList<Creature> targets) =>
