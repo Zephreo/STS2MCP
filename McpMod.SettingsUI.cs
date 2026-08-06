@@ -4,8 +4,10 @@ using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.addons.mega_text;
 using MegaCrit.Sts2.Core.HoverTips;
+using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.HoverTips;
 using MegaCrit.Sts2.Core.Nodes.Screens.Settings;
+using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Settings;
 
@@ -13,8 +15,99 @@ namespace STS2_MCP;
 
 public static partial class McpMod
 {
+    private const string InstantModeConfigKey = "instant_mode";
+
     private static NFastModeTickbox? _instantModeTickbox;
     private static NFastModeTickbox? _originalFastModeTickbox;
+
+    /// <summary>
+    /// The player's Instant Mode preference. Persisted in STS2_MCP.conf rather than in the
+    /// game's own prefs save, because the game deliberately downgrades a stored
+    /// <see cref="FastModeType.Instant" /> back to <see cref="FastModeType.Fast" /> on every
+    /// startup (NGame's init block, non-editor builds) — so the game save cannot hold it.
+    /// </summary>
+    private static bool _instantModeEnabled;
+
+    /// <summary>Whether we currently have Instant forced into the game's prefs.</summary>
+    private static bool _instantModeApplied;
+
+    /// <summary>Latched once the game itself has loaded the prefs save. See <see cref="PrefsAreLoaded" />.</summary>
+    private static bool _prefsReady;
+
+    private static bool _instantModeErrorLogged;
+
+    internal static void LoadInstantModePreference()
+    {
+        _instantModeEnabled = ReadConfigBool(InstantModeConfigKey, fallback: false);
+        if (_instantModeEnabled)
+            GD.Print("[STS2 MCP] Instant Mode is enabled (singleplayer only)");
+    }
+
+    private static void SetInstantModeEnabled(bool enabled)
+    {
+        _instantModeEnabled = enabled;
+        WriteConfigValue(InstantModeConfigKey, enabled);
+        ReconcileInstantMode();
+    }
+
+    /// <summary>
+    /// NGame loads the prefs save during its init block, immediately before it launches the
+    /// main menu, so seeing the main menu or a live run proves prefs exist. We must not touch
+    /// SaveManager.Instance before that point: its getter lazily CONSTRUCTS the SaveManager,
+    /// and one built before Steam finishes initializing writes to the local-only save store
+    /// (no cloud sync) for the rest of the session.
+    /// </summary>
+    private static bool PrefsAreLoaded()
+    {
+        if (_prefsReady) return true;
+        try
+        {
+            if (NGame.Instance?.MainMenu != null || RunManager.Instance.IsInProgress)
+                _prefsReady = true;
+        }
+        catch { /* scene tree not up yet */ }
+        return _prefsReady;
+    }
+
+    /// <summary>
+    /// Pushes the Instant Mode preference into the game's prefs when it should be active and
+    /// pulls it back out when it should not. Instant Mode is suppressed during multiplayer
+    /// runs — animation timing is shared presentation state there — and is re-applied by
+    /// itself once the multiplayer run ends. Called every process frame; cheap and idempotent.
+    /// </summary>
+    internal static void ReconcileInstantMode()
+    {
+        // Feature off and nothing of ours applied: leave the game's setting completely alone
+        // (including the dev console's own `instant` command).
+        if (!_instantModeEnabled && !_instantModeApplied) return;
+        if (!PrefsAreLoaded()) return;
+
+        try
+        {
+            var prefs = SaveManager.Instance.PrefsSave;
+            if (prefs == null) return;
+
+            if (_instantModeEnabled && !IsMultiplayerRun())
+            {
+                if (prefs.FastMode != FastModeType.Instant) prefs.FastMode = FastModeType.Instant;
+                _instantModeApplied = true;
+            }
+            else
+            {
+                if (prefs.FastMode == FastModeType.Instant) prefs.FastMode = FastModeType.Fast;
+                _instantModeApplied = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Runs every frame — only ever report the first failure.
+            if (!_instantModeErrorLogged)
+            {
+                _instantModeErrorLogged = true;
+                GD.PrintErr($"[STS2 MCP] Instant Mode reconcile failed: {ex}");
+            }
+        }
+    }
 
     private static bool IsInInstantModeLine(Node node)
     {
@@ -73,7 +166,7 @@ public static partial class McpMod
         // (NFastModeTickbox._Ready() already ran via AddChild, but used original SetFromSettings logic)
         _instantModeTickbox = FindChildOfType<NFastModeTickbox>(instantLine);
         if (_instantModeTickbox != null)
-            _instantModeTickbox.IsTicked = SaveManager.Instance.PrefsSave.FastMode == FastModeType.Instant;
+            _instantModeTickbox.IsTicked = _instantModeEnabled;
 
         GD.Print("[STS2 MCP] Instant Mode checkbox injected into settings");
     }
@@ -96,7 +189,17 @@ public static partial class McpMod
         static bool Prefix(NFastModeTickbox __instance)
         {
             if (!IsInInstantModeLine(__instance)) return true;
-            __instance.IsTicked = SaveManager.Instance.PrefsSave.FastMode == FastModeType.Instant;
+
+            // "Reset gameplay settings" writes FastMode = Normal and then refreshes every
+            // resettable node. Nothing else produces Normal while Instant Mode is on (the
+            // reconciler holds Instant in singleplayer and Fast in multiplayer), so treat it
+            // as the reset it is and drop the preference too.
+            if (_instantModeEnabled && SaveManager.Instance.PrefsSave?.FastMode == FastModeType.Normal)
+                SetInstantModeEnabled(false);
+
+            // Reflects the stored preference, not the live game setting: in a multiplayer run
+            // the setting is suppressed while the preference itself stays on.
+            __instance.IsTicked = _instantModeEnabled;
             return false;
         }
     }
@@ -107,8 +210,11 @@ public static partial class McpMod
         static bool Prefix(NFastModeTickbox __instance)
         {
             if (!IsInInstantModeLine(__instance)) return true;
-            // Instant Mode turned on
-            SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
+            // Instant Mode turned on. It implies Fast Mode — which is also what the player
+            // gets during a multiplayer run, where Instant itself is suppressed.
+            if (SaveManager.Instance.PrefsSave.FastMode == FastModeType.Normal)
+                SaveManager.Instance.PrefsSave.FastMode = FastModeType.Fast;
+            SetInstantModeEnabled(true);
             // Ensure the original Fast Mode checkbox also shows ticked
             if (_originalFastModeTickbox != null && !_originalFastModeTickbox.IsTicked)
                 _originalFastModeTickbox.IsTicked = true;
@@ -123,16 +229,20 @@ public static partial class McpMod
         {
             if (!IsInInstantModeLine(__instance)) return true;
             // Instant Mode turned off - fall back to Fast
-            SaveManager.Instance.PrefsSave.FastMode = FastModeType.Fast;
+            SetInstantModeEnabled(false);
             return false;
         }
 
         static void Postfix(NFastModeTickbox __instance)
         {
-            // Only for the ORIGINAL Fast Mode tickbox being unticked (→ Normal)
+            // Only for the ORIGINAL Fast Mode tickbox being unticked (→ Normal).
+            // Turning Fast Mode off turns Instant Mode off with it, otherwise the reconciler
+            // would immediately drag the setting back up to Instant.
             if (IsInInstantModeLine(__instance)) return;
             if (_instantModeTickbox != null && _instantModeTickbox.IsTicked)
                 _instantModeTickbox.IsTicked = false;
+            if (_instantModeEnabled)
+                SetInstantModeEnabled(false);
         }
     }
 
@@ -154,7 +264,9 @@ public static partial class McpMod
                 .Invoke(boxed, [
                     "This option is added by the STS2MCP mod.\n" +
                     "When enabled, most in-game animations will become instant.\n" +
-                    "Can reduce token usage as get-state calls will no longer receive an intermediate state."
+                    "Can reduce token usage as get-state calls will no longer receive an intermediate state.\n" +
+                    "Applies to singleplayer only — it is suspended during multiplayer runs.\n" +
+                    "The setting is remembered between sessions."
                 ]);
 
             // Replace the _hoverTip field set by the original _Ready

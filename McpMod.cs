@@ -19,7 +19,7 @@ namespace STS2_MCP;
 [ModInitializer("Initialize")]
 public static partial class McpMod
 {
-    public const string Version = "0.5.0";
+    public const string Version = "0.5.1";
     public const int DefaultPort = 15526;
     private const string ConfigFileName = "STS2_MCP.conf";
 
@@ -34,48 +34,83 @@ public static partial class McpMod
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    private static int LoadPort()
+    private static string? ConfigFilePath()
+    {
+        string? modDir = Path.GetDirectoryName(
+            System.Reflection.Assembly.GetExecutingAssembly().Location);
+        return modDir == null ? null : Path.Combine(modDir, ConfigFileName);
+    }
+
+    private static Dictionary<string, JsonElement> ReadConfig()
     {
         try
         {
-            string? modDir = Path.GetDirectoryName(
-                System.Reflection.Assembly.GetExecutingAssembly().Location);
-            if (modDir == null) return DefaultPort;
+            string? configPath = ConfigFilePath();
+            if (configPath == null || !File.Exists(configPath)) return new Dictionary<string, JsonElement>();
 
-            string configPath = Path.Combine(modDir, ConfigFileName);
-            if (!File.Exists(configPath))
-            {
-                try
-                {
-                    var defaultConfig = new Dictionary<string, object> { ["port"] = DefaultPort };
-                    string json = JsonSerializer.Serialize(defaultConfig, _jsonOptions);
-                    File.WriteAllText(configPath, json);
-                    GD.Print($"[STS2 MCP] Created default config at {configPath}");
-                }
-                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
-                {
-                    GD.Print($"[STS2 MCP] No config found at {configPath}; using default port {DefaultPort}");
-                }
-                return DefaultPort;
-            }
-
-            string content = File.ReadAllText(configPath);
-            using var doc = JsonDocument.Parse(content);
-            if (doc.RootElement.TryGetProperty("port", out var portElem)
-                && portElem.TryGetInt32(out int port)
-                && port is > 0 and <= 65535)
-            {
-                return port;
-            }
-
-            GD.PrintErr($"[STS2 MCP] Invalid or missing 'port' in {configPath}, using default {DefaultPort}");
-            return DefaultPort;
+            var parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(configPath));
+            return parsed ?? new Dictionary<string, JsonElement>();
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[STS2 MCP] Failed to load config: {ex.Message}, using default port {DefaultPort}");
+            GD.PrintErr($"[STS2 MCP] Failed to read {ConfigFileName}: {ex.Message}");
+            return new Dictionary<string, JsonElement>();
+        }
+    }
+
+    /// <summary>
+    /// Rewrites a single key in the config file, preserving every other key already there.
+    /// </summary>
+    internal static void WriteConfigValue(string key, object? value)
+    {
+        string? configPath = ConfigFilePath();
+        if (configPath == null) return;
+
+        try
+        {
+            var config = new Dictionary<string, object?>();
+            foreach (var entry in ReadConfig()) config[entry.Key] = entry.Value;
+            config[key] = value;
+            File.WriteAllText(configPath, JsonSerializer.Serialize(config, _jsonOptions));
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[STS2 MCP] Failed to persist '{key}' to {configPath}: {ex.Message}");
+        }
+    }
+
+    internal static bool ReadConfigBool(string key, bool fallback)
+    {
+        if (!ReadConfig().TryGetValue(key, out var elem)) return fallback;
+        return elem.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => fallback
+        };
+    }
+
+    private static int LoadPort()
+    {
+        string? configPath = ConfigFilePath();
+        if (configPath == null) return DefaultPort;
+
+        if (!File.Exists(configPath))
+        {
+            WriteConfigValue("port", DefaultPort);
+            GD.Print($"[STS2 MCP] Created default config at {configPath}");
             return DefaultPort;
         }
+
+        if (ReadConfig().TryGetValue("port", out var portElem)
+            && portElem.TryGetInt32(out int port)
+            && port is > 0 and <= 65535)
+        {
+            return port;
+        }
+
+        GD.PrintErr($"[STS2 MCP] Invalid or missing 'port' in {configPath}, using default {DefaultPort}");
+        return DefaultPort;
     }
 
     public static void Initialize()
@@ -84,6 +119,8 @@ public static partial class McpMod
         {
             // Optional settings UI patches should not block the HTTP bridge itself.
             TryApplyHarmonyPatches();
+
+            LoadInstantModePreference();
 
             // Connect to main thread process frame for action execution
             var tree = (SceneTree)Engine.GetMainLoop();
@@ -126,6 +163,10 @@ public static partial class McpMod
 
     private static void ProcessMainThreadQueue()
     {
+        // Instant Mode is a mod preference rather than a game setting, so it has to be
+        // pushed into (and pulled back out of) the game's prefs as the run context changes.
+        ReconcileInstantMode();
+
         int processed = 0;
         while (_mainThreadQueue.TryDequeue(out var action) && processed < 10)
         {
