@@ -34,6 +34,7 @@ using MegaCrit.Sts2.Core.Entities.Potions;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
+using MegaCrit.Sts2.Core.Nodes.Screens.CustomRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.Screens.Timeline;
@@ -361,9 +362,28 @@ public static partial class McpMod
             return Error($"Event option index {index} out of range ({buttons.Count} options)");
 
         var button = buttons[index];
-        if (button.Option.IsLocked)
+        var option = button.Option;
+        if (option.IsLocked)
             return Error($"Event option {index} is locked");
-        string title = SafeGetText(() => button.Option.Title) ?? "option";
+
+        // NClickableControl.ForceClick is an unconditional OnRelease + signal
+        // emit - it never consults IsEnabled - so this action has to apply the
+        // game's own gate itself. An option that starts a fight runs its body
+        // across several awaits (fade out, combat state sync, combat asset
+        // preload), and during all of it the buttons are still in the tree, so
+        // a client polling at 10 Hz re-picks the same option and fires the body
+        // a second time, which wedges the run. Both flags below are set the
+        // instant a choice begins executing: NEventRoom.BeforeOptionChosen
+        // calls DisableOptionButtons(), and EventOption.Chosen() assigns
+        // WasChosen synchronously before awaiting OnChosen.
+        if (IsRunTransitionInFlight())
+            return Error("A room transition is already resolving - wait for the destination room to finish loading");
+        if (option.WasChosen)
+            return Error($"Event option {index} was already chosen");
+        if (!button.IsEnabled)
+            return Error($"Event option {index} is not clickable right now - a choice is already resolving");
+
+        string title = SafeGetText(() => option.Title) ?? "option";
         button.ForceClick();
 
         return new Dictionary<string, object?>
@@ -508,13 +528,19 @@ public static partial class McpMod
 
         int index = indexElem.GetInt32();
 
-        var travelable = FindAll<NMapPoint>(mapScreen)
-            .Where(mp => mp.State == MapPointState.Travelable && mp.Point != null)
-            .OrderBy(mp => mp.Point!.coord.col)
-            .ToList();
+        // The game gates a map click on NMapPoint.IsTravelable + IsInputAllowed;
+        // this action reaches OnMapPointSelectedLocally directly, so it has to
+        // apply the same gate itself. Without it a call landing in the window
+        // between picking a node and the destination room finishing its load
+        // enqueues a SECOND VoteForMapCoordAction on top of the one still
+        // resolving, which wedges the run.
+        if (IsMapTravelInFlight())
+            return Error("A travel is already resolving - wait for the destination room to finish loading");
+
+        var travelable = GetTravelableMapPoints(mapScreen);
 
         if (travelable.Count == 0)
-            return Error("No travelable map nodes available");
+            return Error("No travelable map nodes available (the current room is not finished yet)");
         if (index < 0 || index >= travelable.Count)
             return Error($"Map node index {index} out of range ({travelable.Count} options available)");
 
@@ -1401,6 +1427,15 @@ public static partial class McpMod
             return ExecuteLoadLobbyMenuOption(loadLobby, option);
         }
 
+        // Custom run setup — its own character buttons plus the seed field. Checked
+        // before the singleplayer/multiplayer-host submenus it is pushed over, and
+        // before NCharacterSelectScreen (which it is not).
+        var customRun = FindFirst<NCustomRunScreen>(tree.Root);
+        if (customRun != null && IsNodeVisible(customRun))
+        {
+            return ExecuteCustomRunMenuOption(customRun, option, seed);
+        }
+
         // Character select can outlive or be mounted separately from NMainMenu,
         // so handle it before main-menu-specific routing.
         var charSelect = FindFirst<NCharacterSelectScreen>(tree.Root);
@@ -1692,6 +1727,85 @@ public static partial class McpMod
         }
 
         return Error($"Unknown load lobby option: {option}. Use: confirm, embark, unready, back");
+    }
+
+    /// <summary>Drive the custom run setup screen: character buttons, seed, embark.
+    ///
+    /// The confirm control here is `_confirmButton` (NCharacterSelectScreen calls
+    /// its equivalent `_embarkButton`), and the seed always has a lobby to land on,
+    /// so unlike standard singleplayer a seeded embark is supported.</summary>
+    private static Dictionary<string, object?> ExecuteCustomRunMenuOption(
+        NCustomRunScreen customRun,
+        string option,
+        string? seed)
+    {
+        if (string.Equals(option, "back", System.StringComparison.OrdinalIgnoreCase))
+        {
+            return ClickMenuButtonField(customRun, "_backButton", "Going back from custom run", "Back button is not available");
+        }
+
+        if (string.Equals(option, "unready", System.StringComparison.OrdinalIgnoreCase))
+        {
+            return ClickMenuButtonField(customRun, "_unreadyButton", "Retracted ready vote", "Unready button not available — you have not confirmed yet");
+        }
+
+        if (string.Equals(option, "confirm", System.StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(option, "embark", System.StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(seed))
+            {
+                seed = seed.Trim();
+                if (customRun.Lobby == null)
+                    return Error("Custom run lobby is not initialized yet; retry in a moment. Seed was not applied and the run was not started.");
+
+                try
+                {
+                    // Setting LineEdit.Text does not emit text_changed, so the lobby
+                    // has to be told directly; the text is updated purely so the
+                    // on-screen field matches the seed actually in use.
+                    customRun.Lobby.SetSeed(seed);
+                    if (GetInstanceFieldValue(customRun, "_seedInput") is LineEdit seedInput)
+                        seedInput.Text = seed;
+                }
+                catch (System.Exception ex)
+                {
+                    return Error($"Seeded embark failed before starting the run: {ex.Message}");
+                }
+            }
+
+            if (GetInstanceFieldValue(customRun, "_confirmButton") is NClickableControl confirmClickable &&
+                confirmClickable.IsEnabled)
+            {
+                var msg = string.IsNullOrEmpty(seed)
+                    ? "Embarking on custom run"
+                    : $"Embarking on custom run (seed: {seed})";
+                confirmClickable.ForceClick();
+                return new Dictionary<string, object?> { ["status"] = "ok", ["message"] = msg };
+            }
+            return Error("Embark button not available — select a character first");
+        }
+
+        if (IsCharacterSelectionBusy())
+            return Error("Character selection is busy (unlock animation in progress); retry in a moment.");
+
+        var buttons = FindAll<NCharacterSelectButton>(customRun);
+        foreach (var btn in buttons)
+        {
+            if (btn.Character != null && (
+                string.Equals(btn.Character.Id.Entry, option, System.StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(SafeGetText(() => btn.Character.Title), option, System.StringComparison.OrdinalIgnoreCase)))
+            {
+                if (btn.IsLocked)
+                    return Error($"Character '{option}' is locked");
+                // Same reason as character select: Select() no-ops while the button
+                // still believes it is selected, and the screen auto-selects the
+                // first button when it opens.
+                btn.Deselect();
+                btn.Select();
+                return new Dictionary<string, object?> { ["status"] = "ok", ["message"] = $"Selected {SafeGetText(() => btn.Character.Title)}. Use 'embark' to start the custom run." };
+            }
+        }
+        return Error($"Character '{option}' not found. Available: {string.Join(", ", buttons.Where(b => !b.IsLocked).Select(b => b.Character?.Id.Entry))}");
     }
 
     private static Dictionary<string, object?> ExecuteCharacterSelectMenuOption(

@@ -59,7 +59,7 @@ All POST requests use JSON body with `"action"` field. All responses include `{ 
 
 | Action | Parameters | When to Use |
 |---|---|---|
-| `menu_select` | `option`: string, `seed`?: string | Choose an advertised menu option. Options are case-insensitive. Submenus include `back` where visible, including `profile_select` options `profile_1`, `profile_2`, `profile_3`, and `back`. Blocking popups expose normalized button labels such as `ignore` or `back`. `game_over` supports `main_menu` only; `continue` returns an error. Supplying `seed` in unsupported contexts such as standard singleplayer character select returns an error and does not start a run. If Timeline has pending obtained epochs that require manual reveal, it may appear in `blocked_options`; selecting `timeline` returns `manual_action_required: true` with `pending_epoch_ids` instead of opening Timeline. Multiplayer flow: on `multiplayer_join` use `refresh` / `back` / `join_<index>` / `join_<player_id>`. On `multiplayer_load_lobby` use `confirm` (or `embark`) to ready up, `unready` to retract, `back` to leave. On `character_select` while in MP, an additional `unready` option becomes available after readying, plus a `lobby` block in state lists ascension, all_ready, and per-player roster. |
+| `menu_select` | `option`: string, `seed`?: string | Choose an advertised menu option. Options are case-insensitive. Submenus include `back` where visible, including `profile_select` options `profile_1`, `profile_2`, `profile_3`, and `back`. Blocking popups expose normalized button labels such as `ignore` or `back`. `game_over` supports `main_menu` only; `continue` returns an error. Supplying `seed` in unsupported contexts such as standard singleplayer character select returns an error and does not start a run — a seeded run must go through `custom` (`main` -> `singleplayer` -> `custom` -> character ID -> `embark` with `seed`), whose screen is reported as `custom_run`. If Timeline has pending obtained epochs that require manual reveal, it may appear in `blocked_options`; selecting `timeline` returns `manual_action_required: true` with `pending_epoch_ids` instead of opening Timeline. Multiplayer flow: on `multiplayer_join` use `refresh` / `back` / `join_<index>` / `join_<player_id>`. On `multiplayer_load_lobby` use `confirm` (or `embark`) to ready up, `unready` to retract, `back` to leave. On `character_select` while in MP, an additional `unready` option becomes available after readying, plus a `lobby` block in state lists ascension, all_ready, and per-player roster. |
 
 ### Profiles
 
@@ -111,6 +111,11 @@ Example searches:
 
 ### Combat
 
+A `monster` / `elite` / `boss` state carries `battle` only while the fight is
+live. `combat_starting: true` (no `battle`) means the room is entered but the
+fight has not started yet — poll, don't act. `"Combat ended. Waiting for
+rewards..."` (no `battle`) is the corresponding tail end.
+
 | Action | Parameters | When to Use |
 |---|---|---|
 | `play_card` | `card_index`: int, `target`?: string | Play a card from hand. `target` is an `entity_id` (e.g. `"JAW_WORM_0"`), required for `AnyEnemy` cards. MP `AnyAlly` cards take an optional teammate id (`players[].entity_id`, e.g. `"player_1"`; never self; defaults to lowest-HP living teammate). |
@@ -145,13 +150,13 @@ Example searches:
 
 | Action | Parameters | When to Use |
 |---|---|---|
-| `choose_map_node` | `index`: int | Travel to a node from `next_options`. |
+| `choose_map_node` | `index`: int | Travel to a node from `next_options`. Empty (and rejected) while the current room is unfinished or a travel is already resolving — see `map.travel_enabled` / `map.travel_in_flight`. |
 
 ### Event (`event`)
 
 | Action | Parameters | When to Use |
 |---|---|---|
-| `choose_event_option` | `index`: int | Choose an event option by index from state. Locked options return an error. Also used for "Proceed" options. |
+| `choose_event_option` | `index`: int | Choose an event option by index from state. Also used for "Proceed" options. Locked options error; so do options that are already `was_chosen`, not `is_enabled`, or picked while a room transition is resolving — poll for the next state rather than retrying. |
 | `advance_dialogue` | _(none)_ | Click through Ancient dialogue until `in_dialogue` is false. |
 
 ### Rest Site (`rest_site`)

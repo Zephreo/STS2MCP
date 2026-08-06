@@ -44,6 +44,7 @@ using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Models.RelicPools;
 using MegaCrit.Sts2.Core.Models.CardPools;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
+using MegaCrit.Sts2.Core.Nodes.Screens.CustomRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using MegaCrit.Sts2.Core.Multiplayer;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
@@ -81,6 +82,19 @@ public static partial class McpMod
             // Detect which menu screen is active
             if (tree?.Root != null)
             {
+                // Custom run setup screen (seed / ascension / modifiers + its own
+                // character buttons). It is a submenu pushed over the singleplayer
+                // or multiplayer-host submenu, and it is NOT an NCharacterSelectScreen,
+                // so it needs its own detection before either of those.
+                if (!result.ContainsKey("menu_screen"))
+                {
+                    var customRun = FindFirst<NCustomRunScreen>(tree.Root);
+                    if (customRun != null && IsNodeVisible(customRun))
+                    {
+                        AddCustomRunMenuState(result, customRun);
+                    }
+                }
+
                 if (!result.ContainsKey("menu_screen"))
                 {
                 // Check for singleplayer submenu (Standard / Daily / Custom)
@@ -545,6 +559,37 @@ public static partial class McpMod
             shopState["next_options"] = BuildMapNextOptions();
             result["shop"] = shopState;
         }
+        else if (currentRoom is CombatRoom loadingCombat
+                 && !CombatManager.Instance.IsInProgress
+                 && (CombatManager.Instance.IsStarting
+                     || IsMapTravelInFlight()
+                     || IsRunTransitionInFlight()))
+        {
+            // Last of the lingering-map guards, and the one whose absence was a
+            // real soft-lock. The combat room is entered but CombatManager has
+            // not flipped IsInProgress yet (asset preload, deck shuffle,
+            // spawn-ins, the combat-start banner). Without this branch a state
+            // read landing in that window either:
+            //   * hits the mapIsOpen fallback below and reports "map" - the map
+            //     SCREEN is still visible during the transition - so a client
+            //     travels a SECOND time, on top of the travel that is still
+            //     resolving, which wedges the run; or
+            //   * hits the CombatRoom branch below and is labelled "Combat
+            //     ended. Waiting for rewards...", the exact opposite of what is
+            //     happening, with no "battle" for the client to act on.
+            // The three signals overlap deliberately and leave no gap.
+            // EnterRoomInternal pushes the combat room onto the room stack
+            // BEFORE awaiting its Enter, so from that moment the room is current
+            // while SetUpCombat (and therefore IsStarting) is still several
+            // awaits away, behind the combat asset preload - that is the window
+            // an event "Fight" option lands in, where neither IsStarting nor the
+            // map's IsTraveling is set and only the run-transition handle is.
+            // It flips to a real battle in about a second, so clients only ever
+            // have to wait.
+            result["state_type"] = loadingCombat.RoomType.ToString().ToLower();
+            result["combat_starting"] = true;
+            result["message"] = "Combat is starting. Wait for the battle state; do not send actions yet.";
+        }
         else if (mapIsOpen)
         {
             result["state_type"] = "map";
@@ -698,6 +743,171 @@ public static partial class McpMod
         return result;
     }
 
+    /// <summary>Describe one character-select button, or null when it carries no
+    /// visible character. Shared by the standard character select and the custom
+    /// run screen, which build their button rows from the same scene.</summary>
+    private static Dictionary<string, object?>? BuildCharacterButtonEntry(NCharacterSelectButton btn)
+    {
+        try
+        {
+            if (btn.Character is not { } cm || !IsNodeVisible(btn))
+                return null;
+
+            var charData = new Dictionary<string, object?>
+            {
+                ["name"] = SafeGetText(() => cm.Title),
+                ["id"] = cm.Id.Entry,
+                ["locked"] = btn.IsLocked,
+                ["hp"] = cm.StartingHp,
+                ["gold"] = cm.StartingGold,
+                ["energy"] = cm.MaxEnergy,
+                ["description"] = SafeGetText(() => cm.CardsModifierDescription),
+            };
+
+            var startRelics = new List<Dictionary<string, object?>>();
+            foreach (var relic in cm.StartingRelics)
+            {
+                startRelics.Add(new Dictionary<string, object?>
+                {
+                    ["name"] = SafeGetText(() => relic.Title),
+                    ["description"] = SafeGetText(() => relic.DynamicDescription)
+                });
+            }
+            if (startRelics.Count > 0)
+                charData["starting_relics"] = startRelics;
+
+            var deckCards = new List<string>();
+            foreach (var card in cm.StartingDeck)
+                deckCards.Add(SafeGetText(() => card.Title) ?? "?");
+            if (deckCards.Count > 0)
+                charData["starting_deck"] = deckCards;
+
+            try
+            {
+                var allCards = cm.CardPool?.AllCards;
+                if (allCards != null)
+                    charData["total_cards"] = System.Linq.Enumerable.Count(allCards);
+            }
+            catch { }
+
+            try
+            {
+                var allRelics = cm.RelicPool?.AllRelics;
+                if (allRelics != null)
+                    charData["total_relics"] = System.Linq.Enumerable.Count(allRelics);
+            }
+            catch { }
+
+            try
+            {
+                var allPotions = cm.PotionPool?.AllPotions;
+                if (allPotions != null)
+                    charData["total_potions"] = System.Linq.Enumerable.Count(allPotions);
+            }
+            catch { }
+
+            return charData;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Custom run setup screen (NCustomRunScreen).
+    ///
+    /// Distinct from `character_select`: it owns the seed field, the modifier
+    /// tickboxes and its own character buttons, and its confirm control is
+    /// `_confirmButton` rather than `_embarkButton`. Standard singleplayer cannot
+    /// take a seed at all (its screen has no lobby), so this is the only screen
+    /// through which a seeded run can be started.</summary>
+    private static void AddCustomRunMenuState(
+        Dictionary<string, object?> result,
+        NCustomRunScreen customRun)
+    {
+        result["state_type"] = "menu";
+        result["menu_screen"] = "custom_run";
+        result["message"] = "Custom run setup. Select a character, then 'embark' (pass 'seed' to fix the run).";
+
+        var characters = new List<Dictionary<string, object?>>();
+        var options = new List<Dictionary<string, object?>>();
+        foreach (var btn in FindAll<NCharacterSelectButton>(customRun))
+        {
+            var charData = BuildCharacterButtonEntry(btn);
+            if (charData == null)
+                continue;
+            options.Add(new Dictionary<string, object?>
+            {
+                ["name"] = charData["id"],
+                ["enabled"] = !(bool)(charData["locked"] ?? false)
+            });
+            characters.Add(charData);
+        }
+        if (characters.Count > 0)
+            result["characters"] = characters;
+
+        // OnSubmenuOpened auto-selects the first button, so a selection always
+        // exists — but it is only committed to the lobby through SelectCharacter,
+        // which is what embark reads. Report the lobby's view.
+        try
+        {
+            if (GetInstanceFieldValue(customRun, "_selectedButton") is NCharacterSelectButton selectedBtn &&
+                selectedBtn.Character is { } selectedCharacter)
+            {
+                result["selected_character"] = selectedCharacter.Id.Entry;
+            }
+        }
+        catch { }
+        result["selection_busy"] = IsCharacterSelectionBusy();
+
+        var lobby = customRun.Lobby;
+        try
+        {
+            if (lobby != null)
+            {
+                result["seed"] = lobby.Seed;
+                result["ascension"] = lobby.Ascension;
+                result["max_ascension"] = lobby.MaxAscension;
+                result["modifiers"] = lobby.Modifiers.Select(m => m.Id.ToString()).ToList();
+                if (lobby.NetService != null && lobby.NetService.Type.IsMultiplayer())
+                    result["lobby"] = BuildStartRunLobbyState(lobby);
+            }
+        }
+        catch { }
+
+        // The seed the game will actually use is Lobby.Seed; the text field is
+        // reported too because a hand-typed seed reaches the lobby only through
+        // the field's changed signal.
+        try
+        {
+            if (GetInstanceFieldValue(customRun, "_seedInput") is LineEdit seedInput)
+                result["seed_input"] = seedInput.Text;
+        }
+        catch { }
+
+        foreach (var (fieldName, label) in new[]
+                 {
+                     ("_confirmButton", "confirm"),
+                     ("_confirmButton", "embark"),
+                     ("_backButton", "back"),
+                     ("_unreadyButton", "unready")
+                 })
+        {
+            if (GetInstanceFieldValue(customRun, fieldName) is NClickableControl clickable &&
+                IsNodeVisible(clickable))
+            {
+                options.Add(new Dictionary<string, object?>
+                {
+                    ["name"] = label,
+                    ["enabled"] = clickable.IsEnabled
+                });
+            }
+        }
+
+        if (options.Count > 0)
+            result["options"] = options;
+    }
+
     private static void AddCharacterSelectMenuState(
         Dictionary<string, object?> result,
         NCharacterSelectScreen charSelect)
@@ -711,75 +921,15 @@ public static partial class McpMod
         var options = new List<Dictionary<string, object?>>();
         foreach (var btn in buttons)
         {
-            try
+            var charData = BuildCharacterButtonEntry(btn);
+            if (charData == null)
+                continue;
+            options.Add(new Dictionary<string, object?>
             {
-                if (btn.Character is { } cm && IsNodeVisible(btn))
-                {
-                    var characterId = cm.Id.Entry;
-                    var characterName = SafeGetText(() => cm.Title);
-                    options.Add(new Dictionary<string, object?>
-                    {
-                        ["name"] = characterId,
-                        ["enabled"] = !btn.IsLocked
-                    });
-
-                    var charData = new Dictionary<string, object?>
-                    {
-                        ["name"] = characterName,
-                        ["id"] = characterId,
-                        ["locked"] = btn.IsLocked,
-                        ["hp"] = cm.StartingHp,
-                        ["gold"] = cm.StartingGold,
-                        ["energy"] = cm.MaxEnergy,
-                        ["description"] = SafeGetText(() => cm.CardsModifierDescription),
-                    };
-
-                    var startRelics = new List<Dictionary<string, object?>>();
-                    foreach (var relic in cm.StartingRelics)
-                    {
-                        startRelics.Add(new Dictionary<string, object?>
-                        {
-                            ["name"] = SafeGetText(() => relic.Title),
-                            ["description"] = SafeGetText(() => relic.DynamicDescription)
-                        });
-                    }
-                    if (startRelics.Count > 0)
-                        charData["starting_relics"] = startRelics;
-
-                    var deckCards = new List<string>();
-                    foreach (var card in cm.StartingDeck)
-                        deckCards.Add(SafeGetText(() => card.Title) ?? "?");
-                    if (deckCards.Count > 0)
-                        charData["starting_deck"] = deckCards;
-
-                    try
-                    {
-                        var allCards = cm.CardPool?.AllCards;
-                        if (allCards != null)
-                            charData["total_cards"] = System.Linq.Enumerable.Count(allCards);
-                    }
-                    catch { }
-
-                    try
-                    {
-                        var allRelics = cm.RelicPool?.AllRelics;
-                        if (allRelics != null)
-                            charData["total_relics"] = System.Linq.Enumerable.Count(allRelics);
-                    }
-                    catch { }
-
-                    try
-                    {
-                        var allPotions = cm.PotionPool?.AllPotions;
-                        if (allPotions != null)
-                            charData["total_potions"] = System.Linq.Enumerable.Count(allPotions);
-                    }
-                    catch { }
-
-                    characters.Add(charData);
-                }
-            }
-            catch { }
+                ["name"] = charData["id"],
+                ["enabled"] = !(bool)(charData["locked"] ?? false)
+            });
+            characters.Add(charData);
         }
         if (characters.Count > 0)
             result["characters"] = characters;
@@ -1638,6 +1788,12 @@ public static partial class McpMod
                     if (calc != null)
                         intentData["damage"] = (int)calc();
                     intentData["hits"] = Math.Max(1, atk.Repeats);
+                    // Powers of the attacker's own that the damage calculation
+                    // reads, so a consumer knows which of its in-sim changes
+                    // move this number (see PowersScalingDamage).
+                    var scaling = PowersScalingDamage(calc);
+                    if (scaling != null)
+                        intentData["scales_with"] = scaling;
                 }
                 else if (intent is StatusIntent status)
                 {
@@ -1724,23 +1880,37 @@ public static partial class McpMod
             int index = 0;
             foreach (var button in buttons)
             {
-                var opt = button.Option;
-                var optData = new Dictionary<string, object?>
+                // Choosing a non-shared option clears the option container
+                // (RemoveChildSafely + QueueFreeSafely), so a poll landing on
+                // that frame can meet a button that is already gone. Skip it
+                // rather than letting ObjectDisposedException fail the whole
+                // state build - the index still advances so it keeps lining up
+                // with what choose_event_option sees.
+                try
                 {
-                    ["index"] = index,
-                    ["title"] = SafeGetText(() => opt.Title),
-                    ["description"] = SafeGetText(() => opt.Description),
-                    ["is_locked"] = opt.IsLocked,
-                    ["is_proceed"] = opt.IsProceed,
-                    ["was_chosen"] = opt.WasChosen
-                };
-                if (opt.Relic != null)
-                {
-                    optData["relic_name"] = SafeGetText(() => opt.Relic.Title);
-                    optData["relic_description"] = SafeGetText(() => opt.Relic.DynamicDescription);
+                    var opt = button.Option;
+                    var optData = new Dictionary<string, object?>
+                    {
+                        ["index"] = index,
+                        ["title"] = SafeGetText(() => opt.Title),
+                        ["description"] = SafeGetText(() => opt.Description),
+                        ["is_locked"] = opt.IsLocked,
+                        ["is_proceed"] = opt.IsProceed,
+                        ["was_chosen"] = opt.WasChosen,
+                        // False while a choice is executing (DisableOptionButtons).
+                        // choose_event_option rejects the option in that window,
+                        // so clients must not re-pick it.
+                        ["is_enabled"] = button.IsEnabled
+                    };
+                    if (opt.Relic != null)
+                    {
+                        optData["relic_name"] = SafeGetText(() => opt.Relic.Title);
+                        optData["relic_description"] = SafeGetText(() => opt.Relic.DynamicDescription);
+                    }
+                    optData["keywords"] = BuildHoverTips(opt.HoverTips);
+                    options.Add(optData);
                 }
-                optData["keywords"] = BuildHoverTips(opt.HoverTips);
-                options.Add(optData);
+                catch (ObjectDisposedException) { }
                 index++;
             }
         }
@@ -1999,10 +2169,7 @@ public static partial class McpMod
         if (mapScreen == null)
             return nextOptions;
 
-        var travelable = FindAll<NMapPoint>(mapScreen)
-            .Where(mp => mp.State == MapPointState.Travelable && mp.Point != null)
-            .OrderBy(mp => mp.Point!.coord.col)
-            .ToList();
+        var travelable = GetTravelableMapPoints(mapScreen);
 
         int index = 0;
         foreach (var nmp in travelable)
@@ -2063,8 +2230,13 @@ public static partial class McpMod
         }
         state["visited"] = visited;
 
-        // Next options - read travelable state from UI nodes
+        // Next options - read travelable state from UI nodes. Empty whenever the
+        // current room is unfinished or a travel is already resolving, so the
+        // two flags below say WHY rather than leaving a client guessing.
         state["next_options"] = BuildMapNextOptions();
+        var mapScreen = NMapScreen.Instance;
+        state["travel_enabled"] = mapScreen != null && mapScreen.IsTravelEnabled;
+        state["travel_in_flight"] = IsMapTravelInFlight();
 
         // Full map - all nodes organized for planning
         var nodes = new List<Dictionary<string, object?>>();

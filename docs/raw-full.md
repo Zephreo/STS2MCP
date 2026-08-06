@@ -211,6 +211,7 @@ Menu sub-screens expose their own options:
 - `multiplayer_load_lobby`: `confirm` / `embark`, `unready`, `back`
 - `profile_select`: `profile_1`, `profile_2`, `profile_3`, `back`
 - `character_select`: character IDs/names, `back`, `confirm` / `embark`, `unready` (MP, after readying)
+- `custom_run`: character IDs/names, `back`, `confirm` / `embark` (accepts `seed`), `unready` (MP, after readying)
 - `tutorial_prompt`: `no`, `yes`
 - `popup`: advertised popup button labels, normalized to lowercase words such as `ignore` or `back`
 - `timeline`: `advance`, `back`
@@ -281,6 +282,43 @@ Reached via the `multiplayer` submenu's `load` option (host) or by joining a hos
 }
 ```
 
+#### `custom_run` — Custom run setup (seeded runs)
+
+Reached from the `singleplayer` (or `multiplayer_host`) submenu via `custom`. This is
+a different screen from `character_select`: it owns the seed field, the ascension
+panel and the modifier tickboxes, and it carries its own character buttons.
+
+It is the **only** way to start a run on a chosen seed. Standard singleplayer
+character select has no lobby behind it, so a seeded `embark` there is rejected.
+
+```jsonc
+{
+  "state_type": "menu",
+  "menu_screen": "custom_run",
+  "message": "Custom run setup. Select a character, then 'embark' (pass 'seed' to fix the run).",
+  "characters": [ /* same shape as character_select */ ],
+  "selected_character": "IRONCLAD",  // the screen auto-selects the first button on open
+  "selection_busy": false,
+  "seed": "0",                       // the lobby's seed (what the run will actually use)
+  "seed_input": "0",                 // the on-screen text field
+  "ascension": 0,
+  "max_ascension": 0,
+  "modifiers": [],                   // ticked custom modifiers, empty for a clean run
+  "lobby": { /* present only in MP host/client */ },
+  "options": [
+    { "name": "IRONCLAD", "enabled": true },
+    { "name": "confirm",  "enabled": true },
+    { "name": "embark",   "enabled": true },   // alias of confirm
+    { "name": "back",     "enabled": true },
+    { "name": "unready",  "enabled": false }   // MP only; enabled after confirm/embark
+  ]
+}
+```
+
+`menu_select` with `confirm`/`embark` and a `seed` applies the seed to the lobby
+before clicking, so the run starts on it. The seed is canonicalized by the game
+(upper-cased, `O` -> `0`, `I` -> `1`).
+
 #### `character_select` — extended for MP
 
 The same screen drives SP, MP host, and MP client. In MP, an additional `lobby` block appears, and the `unready` option becomes available after the local player has hit `confirm`/`embark`:
@@ -342,6 +380,16 @@ Run state or room type not recognized.
 ```
 
 ### `monster` / `elite` / `boss` — Combat
+
+A combat room reports its room type as `state_type` for its whole lifetime, so
+the payload says which phase it is in. `battle` is only present once the fight
+has actually started:
+
+| Payload | Meaning | What to do |
+|---------|---------|------------|
+| `battle` present | Combat is live | Act normally (respect `is_play_phase`) |
+| `combat_starting: true`, no `battle` | The room is entered but the fight has not started (asset load, deck shuffle, spawn-ins, combat-start banner). Covers combats reached from the map *and* from an event's "Fight" option | Poll again; do not send actions. Lasts about a second |
+| `message: "Combat ended. Waiting for rewards..."`, no `battle` | The fight is over and rewards are on the way | Poll again until the rewards overlay or the map appears |
 
 ```jsonc
 {
@@ -657,6 +705,8 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
         ]
       }
     ],
+    "travel_enabled": true,      // false while the current room is unfinished
+    "travel_in_flight": false,   // true between picking a node and the room loading
     "nodes": [                   // Full map DAG
       {
         "col": 3, "row": 0,
@@ -698,6 +748,7 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
         "is_locked": false,
         "is_proceed": false,
         "was_chosen": false,
+        "is_enabled": true,                  // false while a choice is executing
         "relic_name": "Relic Name",         // Only if option has a relic
         "relic_description": "Relic desc.",  // Only if option has a relic
         "keywords": [ /* Keyword Objects */ ]
@@ -1438,6 +1489,12 @@ Choose an event option.
 
 Works for both regular events and Ancients (after dialogue ends).
 
+An option is rejected once it has been chosen (`was_chosen`), while its button
+is disabled (`is_enabled: false`), or while a room transition is resolving.
+Options whose body starts a fight run across several frames, so without those
+guards a client polling fast enough re-picks the same option and fires it twice,
+which wedges the run. Poll until the state changes instead of retrying.
+
 ### `advance_dialogue`
 
 Click through Ancient dialogue.
@@ -1485,6 +1542,12 @@ Travel to a map node.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `index` | int | Yes | 0-based index from `next_options` |
+
+`next_options` is empty (and this action errors) whenever the current room is
+not finished or a travel is already resolving — `map.travel_enabled` and
+`map.travel_in_flight` say which. Sending a travel during that window enqueues
+a second map vote on top of the one still resolving and wedges the run, so it
+is rejected rather than forwarded.
 
 ### `select_card`
 

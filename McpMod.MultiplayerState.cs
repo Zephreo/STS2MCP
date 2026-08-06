@@ -133,6 +133,20 @@ public static partial class McpMod
                 ["message"] = $"An overlay ({topOverlay.GetType().Name}) is active. It may require manual interaction in-game."
             };
         }
+        else if (currentRoom is CombatRoom loadingCombat
+                 && !CombatManager.Instance.IsInProgress
+                 && (CombatManager.Instance.IsStarting
+                     || IsMapTravelInFlight()
+                     || IsRunTransitionInFlight()))
+        {
+            // Mirrors the singleplayer builder: the combat room is entered but
+            // not started yet, and the map screen is still visible over it. See
+            // the long comment there - reporting "map" here lets a client travel
+            // a second time on top of the travel that is still resolving.
+            result["state_type"] = loadingCombat.RoomType.ToString().ToLower();
+            result["combat_starting"] = true;
+            result["message"] = "Combat is starting. Wait for the battle state; do not send actions yet.";
+        }
         else if (currentRoom is CombatRoom combatRoom)
         {
             if (CombatManager.Instance.IsInProgress)
