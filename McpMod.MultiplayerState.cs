@@ -293,7 +293,7 @@ public static partial class McpMod
 
         battle["round"] = combatState.RoundNumber;
         battle["turn"] = combatState.CurrentSide.ToString().ToLower();
-        battle["is_play_phase"] = IsPlayPhase(LocalContext.GetMe(runState));
+        battle["is_play_phase"] = IsPlayPhase(combatState);
         battle["all_players_ready"] = CombatManager.Instance.AllPlayersReadyToEndTurn();
 
         // Enemies

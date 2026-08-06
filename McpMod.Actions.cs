@@ -457,6 +457,7 @@ public static partial class McpMod
             var merchUI = NMerchantRoom.Instance;
             if (merchUI?.Inventory != null && !merchUI.Inventory.IsOpen)
                 merchUI.OpenInventory();
+            // v0.107 split the merchant into per-player inventories; take the local one.
             inventory = merchantRoom.GetLocalInventory();
         }
         else if (player.RunState.CurrentRoom is EventRoom eventRoom
