@@ -58,6 +58,9 @@ Always present at the top level (except `menu`). Contains everything about the l
   // --- Combat-only fields (present only when CombatManager.IsInProgress) ---
   "energy": 3,
   "max_energy": 3,
+  "turn_number": 4,         // This player's turn count, extra turns included (battle.round only counts normal side switches).
+                            //   Use it as the "a new player turn began" edge: is_play_phase alone is unreliable, since with
+                            //   Instant Mode the enemy phase can start and finish between two polls.
   "stars": 2,               // Regent only; omitted if 0 and character doesn't always show stars
   "hand": [ /* Card Objects */ ],
   "draw_pile_count": 15,

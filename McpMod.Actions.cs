@@ -437,6 +437,17 @@ public static partial class McpMod
         var button = buttons[index];
         if (!button.Option.IsEnabled)
             return Error($"Rest option {index} ({button.Option.OptionId}) is disabled");
+        // Same gate as the event action above: ForceClick bypasses IsEnabled, and
+        // NRestSiteButton.SelectOption re-runs the option's whole body without
+        // consulting it either. The chosen option stays in the room's option list
+        // until that body finishes - and a heal that offers rewards (Tiny Mailbox)
+        // sits there for as long as the potions go unclaimed - so a client allowed
+        // to pick again (Miniature Tent) would otherwise fire a second option, or
+        // the same one twice, into the one still resolving. DisableOptions() runs
+        // the instant a selection begins; the buttons are rebuilt (enabled) once
+        // it completes, so this only ever blocks the in-flight window.
+        if (!button.IsEnabled)
+            return Error($"Rest option {index} is not clickable right now - an option is already resolving");
         string optionName = SafeGetText(() => button.Option.Title) ?? button.Option.OptionId;
         button.ForceClick();
 

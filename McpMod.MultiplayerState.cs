@@ -117,8 +117,13 @@ public static partial class McpMod
             result["state_type"] = "card_reward";
             result["card_reward"] = BuildCardRewardState(cardRewardScreen);
         }
-        else if (!mapIsOpen && topOverlay is NRewardsScreen rewardsScreen)
+        else if (topOverlay is NRewardsScreen rewardsScreen
+                 && (!mapIsOpen || RewardsSetIsOutstanding(rewardsScreen)))
         {
+            // Mirrors the singleplayer builder: a rewards set the run is still
+            // waiting on outranks a visible map screen, or a set offered from
+            // inside a room action (Tiny Mailbox's rest-site potions) is masked
+            // as the room it came from and nobody can act on it.
             result["state_type"] = "rewards";
             result["rewards"] = BuildRewardsState(rewardsScreen, runState);
         }

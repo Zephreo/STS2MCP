@@ -462,8 +462,18 @@ public static partial class McpMod
             result["state_type"] = "card_reward";
             result["card_reward"] = BuildCardRewardState(cardRewardScreen);
         }
-        else if (!mapIsOpen && topOverlay is NRewardsScreen rewardsScreen)
+        else if (topOverlay is NRewardsScreen rewardsScreen
+                 && (!mapIsOpen || RewardsSetIsOutstanding(rewardsScreen)))
         {
+            // The map deference above is only correct for a rewards screen that
+            // has already been answered - it lingers on the stack while the map
+            // opens underneath. A set the run is still WAITING on must win over
+            // the map: Tiny Mailbox offers two potions from inside the rest-site
+            // heal (RewardsCmd.OfferCustom), and that heal is awaited before the
+            // chosen option leaves the room's option list, so masking the
+            // overlay reported "rest_site" with its (still enabled) options and
+            // nothing a client could act on - the run cannot proceed until the
+            // potions are taken or skipped, so nothing ever changed again.
             result["state_type"] = "rewards";
             result["rewards"] = BuildRewardsState(rewardsScreen, runState);
         }
@@ -1423,6 +1433,12 @@ public static partial class McpMod
             state["energy"] = combatState.Energy;
             state["max_energy"] = combatState.MaxEnergy;
 
+            // Counts every turn THIS player takes, extra turns included (battle.round
+            // only ticks on a normal side switch). Clients use it as the "a new player
+            // turn began" edge, which they cannot get from is_play_phase alone: with
+            // Instant Mode the enemy phase can start and finish between two polls.
+            state["turn_number"] = combatState.TurnNumber;
+
             // Stars (The Regent's resource, conditionally shown)
             if (player.Character.ShouldAlwaysShowStarCounter || combatState.Stars > 0)
             {
@@ -2024,23 +2040,32 @@ public static partial class McpMod
     {
         var state = new Dictionary<string, object?>();
 
+        var openRoom = NRestSiteRoom.Instance;
         var options = new List<Dictionary<string, object?>>();
         int index = 0;
         foreach (var opt in restSiteRoom.Options)
         {
+            // RestSiteOption.IsEnabled is a static property of the option (HEAL
+            // is unconditionally true); the room's button carries the live gate,
+            // which DisableOptions() takes down for as long as a chosen option is
+            // resolving - and a heal that offers rewards (Tiny Mailbox's potions)
+            // stays in the option list for that whole window. Report the stricter
+            // of the two so no client reads an option as actionable while another
+            // is mid-flight. The buttons are rebuilt, enabled, once it finishes;
+            // while the room UI has not built them yet, the model stands alone.
+            var button = openRoom?.GetButtonForOption(opt);
             options.Add(new Dictionary<string, object?>
             {
                 ["index"] = index,
                 ["id"] = opt.OptionId,
                 ["name"] = SafeGetText(() => opt.Title),
                 ["description"] = SafeGetText(() => opt.Description),
-                ["is_enabled"] = opt.IsEnabled
+                ["is_enabled"] = opt.IsEnabled && (button?.IsEnabled ?? true)
             });
             index++;
         }
         state["options"] = options;
 
-        var openRoom = NRestSiteRoom.Instance;
         state["room_open"] = openRoom != null;
         var proceedButton = openRoom?.ProceedButton;
         state["can_proceed"] = proceedButton?.IsEnabled ?? false;
@@ -2315,6 +2340,42 @@ public static partial class McpMod
                 .Select(c => new List<int> { c.coord.col, c.coord.row })
                 .ToList()
         };
+    }
+
+    private static FieldInfo? _rewardsSetField;
+
+    /// <summary>
+    /// True while the run is still blocked on this rewards screen's set.
+    /// </summary>
+    /// <remarks>
+    /// Lets the state builder tell a LIVE rewards screen from one that merely
+    /// lingers on the overlay stack after the player proceeded (the reason the
+    /// rewards branch otherwise defers to a visible map screen). The
+    /// synchronizer is the authority: a set is marked completed only once every
+    /// reward has been taken or the whole set was skipped, and until then
+    /// whatever awaited <c>RewardsSet.Offer</c> - a combat room end, or the
+    /// rest-site heal Tiny Mailbox hangs its potions off - cannot continue.
+    ///
+    /// The set is a private field of the screen; if a game update renames it we
+    /// report false, which is exactly the pre-fix behaviour (defer to the map).
+    /// Only the top-of-stack screen is inspected, so a card-reward selection
+    /// opened FROM a live set is not covered - no known relic or event offers a
+    /// card reward this way.
+    /// </remarks>
+    private static bool RewardsSetIsOutstanding(NRewardsScreen screen)
+    {
+        try
+        {
+            _rewardsSetField ??= typeof(NRewardsScreen)
+                .GetField("_rewardsSet", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (_rewardsSetField?.GetValue(screen) is not RewardsSet set)
+                return false;
+            return !RunManager.Instance.RewardsSetSynchronizer.IsRewardsSetCompleted(set);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static Dictionary<string, object?> BuildRewardsState(NRewardsScreen rewardsScreen, RunState runState)
