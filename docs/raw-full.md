@@ -36,7 +36,33 @@ Every response (except `menu`) includes these top-level fields alongside the sta
   "run": {
     "act": 1,               // Current act (1-indexed)
     "floor": 3,             // Total floors visited
-    "ascension": 0          // Ascension level
+    "ascension": 0,         // Ascension level
+    "visited_event_ids": ["WELLSPRING"]  // Events already seen this run;
+                            // RoomSet.EnsureNextEventIsValid skips past these
+  },
+  "act": {                  // The act's pre-rolled room queues (ActModel._rooms)
+    "index": 0,             // 0-based act index
+    "id": "OVERGROWTH",
+    "rooms_total": 15,
+    "floors_total": 17,
+    "encounters": {
+      // Consumed in order: PullNextEncounter is list[visited % count], so these
+      // name the exact fight behind every Monster and Elite node on the map.
+      "normal": ["NIBBITS_WEAK", "SLIMES_WEAK", "MAWLER_NORMAL"],
+      "normal_visited": 1,
+      "elite": ["BYRDONIS_ELITE", "PHROG_PARASITE_ELITE"],
+      "elite_visited": 0,
+      // NOT already skip-adjusted: replay EnsureNextEventIsValid yourself using
+      // run.visited_event_ids, since doing it here would mutate run state.
+      "events": ["SAPPHIRE_SEED", "WELLSPRING"],
+      "events_visited": 0,
+      "boss_visited": 0
+    }
+  },
+  "profile": {
+    // UnknownMapPointOdds.Roll forces the first three "?" rooms on a profile
+    // that has never finished a run, consuming no RNG while it does.
+    "number_of_runs": 42
   },
   "player": { ... },        // Full player state (see Player Object below)
   // ... state-specific fields
@@ -697,6 +723,19 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
       { "col": 3, "row": 1, "type": "Monster" },
       { "col": 3, "row": 2, "type": "Monster" }
     ],
+    // Current act only. `visited` above carries the map-point TYPE; this is the
+    // only place a "?" reports the room it actually became, and which encounter
+    // or event was served there. Also the input to
+    // RunManager.BuildRoomTypeBlacklist (no Shop straight after a Shop).
+    "point_history": [
+      {
+        "map_point_type": "Unknown",
+        "rooms": [
+          { "room_type": "Monster", "model_id": "MAWLER_NORMAL",
+            "monster_ids": ["MAWLER"] }
+        ]
+      }
+    ],
     "next_options": [
       {
         "index": 0,
@@ -746,6 +785,10 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
     "options": [
       {
         "index": 0,
+        // EventOption.TextKey: a stable, language-independent option id. Match
+        // on this rather than on the localized title/description, which change
+        // with rewording and translation.
+        "option_key": "NEOW.pages.INITIAL.options.DRAFT",
         "title": "Draft",
         "description": "Choose 10 card rewards to replace your starting deck.",
         "is_locked": false,

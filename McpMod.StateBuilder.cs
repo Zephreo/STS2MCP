@@ -41,6 +41,7 @@ using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Models.Monsters;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Models.RelicPools;
 using MegaCrit.Sts2.Core.Models.CardPools;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
@@ -741,7 +742,30 @@ public static partial class McpMod
         var runRng = BuildRngStreams(runState);
         if (runRng != null)
             runInfo["rng"] = runRng;
+        // Events already seen this run. RoomSet.EnsureNextEventIsValid skips
+        // past these when serving the next event, so a client replaying the
+        // event queue needs them to name the same event the game will.
+        runInfo["visited_event_ids"] = runState.VisitedEventIds.Select(id => id.Entry).ToList();
         result["run"] = runInfo;
+
+        // The act's pre-rolled room queues. These decide which fight and which
+        // event sit behind each map node, and they are pure run state, so they
+        // ride along on every screen rather than only on the map.
+        var actInfo = BuildActState(runState);
+        if (actInfo != null)
+            result["act"] = actInfo;
+
+        // Completed runs on this profile. UnknownMapPointOdds.Roll forces the
+        // first three "?" rooms on a brand-new profile, so a client predicting
+        // them has to know whether that override is active.
+        try
+        {
+            result["profile"] = new Dictionary<string, object?>
+            {
+                ["number_of_runs"] = SaveManager.Instance.Progress.NumberOfRuns
+            };
+        }
+        catch { }
 
         // Always include full player data (relics, potions, deck, etc.) on every screen
         var _player = LocalContext.GetMe(runState);
@@ -1515,6 +1539,129 @@ public static partial class McpMod
         return state;
     }
 
+    // Cached reflection handles for ActModel._rooms and the RoomSet fields.
+    // RoomSet's lists are protected, but they are the only place the act's room
+    // ORDER lives, and re-deriving it would mean replaying GenerateRooms.
+    private static FieldInfo? _actRoomsField;
+    private static readonly Dictionary<string, FieldInfo?> _roomSetFields = new();
+
+    /// <summary>The act's pre-rolled encounter and event queues plus their
+    /// consumed counters, or null when the run has not finished act setup.</summary>
+    /// <remarks>
+    /// PullNextEncounter is just <c>list[visited % count]</c>, so these two
+    /// numbers name the exact fight behind every Monster and Elite node on the
+    /// map. Nothing here mutates: EnsureNextEventIsValid would bump
+    /// eventsVisited, so the raw list is exported and the skip is replayed
+    /// client-side instead.
+    /// </remarks>
+    private static Dictionary<string, object?>? BuildActState(RunState runState)
+    {
+        try
+        {
+            var act = runState.Act;
+            _actRoomsField ??= typeof(ActModel).GetField(
+                "_rooms", BindingFlags.Instance | BindingFlags.NonPublic);
+            var rooms = _actRoomsField?.GetValue(act);
+            if (rooms == null)
+                return null;
+
+            List<string>? Ids(string field)
+            {
+                if (!_roomSetFields.TryGetValue(field, out var info))
+                {
+                    info = rooms.GetType().GetField(
+                        field, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    _roomSetFields[field] = info;
+                }
+                if (info?.GetValue(rooms) is not System.Collections.IEnumerable list)
+                    return null;
+                var ids = new List<string>();
+                foreach (var item in list)
+                {
+                    var id = item?.GetType().GetProperty("Id")?.GetValue(item);
+                    var entry = id?.GetType().GetProperty("Entry")?.GetValue(id) as string;
+                    if (entry != null)
+                        ids.Add(entry);
+                }
+                return ids;
+            }
+
+            int Visited(string field)
+            {
+                if (!_roomSetFields.TryGetValue(field, out var info))
+                {
+                    info = rooms.GetType().GetField(
+                        field, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                    _roomSetFields[field] = info;
+                }
+                return info?.GetValue(rooms) is int value ? value : 0;
+            }
+
+            var normal = Ids("normalEncounters");
+            var elite = Ids("eliteEncounters");
+            var events = Ids("events");
+            if (normal == null || elite == null || events == null)
+                return null;
+
+            bool isMultiplayer = runState.Players.Count > 1;
+            return new Dictionary<string, object?>
+            {
+                ["index"] = runState.CurrentActIndex,
+                ["id"] = act.Id.Entry,
+                ["rooms_total"] = act.GetNumberOfRooms(isMultiplayer),
+                ["floors_total"] = act.GetNumberOfFloors(isMultiplayer),
+                ["encounters"] = new Dictionary<string, object?>
+                {
+                    ["normal"] = normal,
+                    ["normal_visited"] = Visited("normalEncountersVisited"),
+                    ["elite"] = elite,
+                    ["elite_visited"] = Visited("eliteEncountersVisited"),
+                    ["events"] = events,
+                    ["events_visited"] = Visited("eventsVisited"),
+                    ["boss_visited"] = Visited("bossEncountersVisited")
+                }
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Per map point visited this act: what it was, and which rooms and
+    /// models it actually resolved into.</summary>
+    /// <remarks>
+    /// This is the only record of what a "?" turned into and which encounter was
+    /// fought there, so it is both the ground truth for validating a client's
+    /// "?" predictions and the input to RunManager.BuildRoomTypeBlacklist.
+    /// </remarks>
+    private static List<Dictionary<string, object?>> BuildMapPointHistory(RunState runState)
+    {
+        var history = new List<Dictionary<string, object?>>();
+        var acts = runState.MapPointHistory;
+        if (acts.Count == 0)
+            return history;
+        foreach (var entry in acts[acts.Count - 1])
+        {
+            var rooms = new List<Dictionary<string, object?>>();
+            foreach (var room in entry.Rooms)
+            {
+                rooms.Add(new Dictionary<string, object?>
+                {
+                    ["room_type"] = room.RoomType.ToString(),
+                    ["model_id"] = room.ModelId?.Entry,
+                    ["monster_ids"] = room.MonsterIds.Select(m => m.Entry).ToList()
+                });
+            }
+            history.Add(new Dictionary<string, object?>
+            {
+                ["map_point_type"] = entry.MapPointType.ToString(),
+                ["rooms"] = rooms
+            });
+        }
+        return history;
+    }
+
     // Serializes a player's relics. Shared by the local player (BuildPlayerState)
     // and the teammate reveal (BuildAllPlayersState).
     private static List<Dictionary<string, object?>> BuildRelicsList(Player player)
@@ -1527,7 +1674,12 @@ public static partial class McpMod
                 ["id"] = relic.Id.Entry,
                 ["name"] = SafeGetText(() => relic.Title),
                 ["description"] = SafeGetText(() => relic.DynamicDescription),
-                ["counter"] = relic.ShowCounter ? relic.DisplayAmount : null,
+                // Golden Compass hides its counter in the UI but the act it was
+                // picked up in decides whether every "?" this act is an Event,
+                // so a client predicting them needs it.
+                ["counter"] = relic is GoldenCompass compass
+                    ? compass.GoldenPathAct
+                    : (relic.ShowCounter ? relic.DisplayAmount : (int?)null),
                 ["keywords"] = BuildHoverTips(relic.HoverTipsExcludingRelic)
             });
         }
@@ -1908,6 +2060,12 @@ public static partial class McpMod
                     var optData = new Dictionary<string, object?>
                     {
                         ["index"] = index,
+                        // The option's stable, language-independent id
+                        // ("SELF_HELP_BOOK.pages.INITIAL.options.READ_THE_BACK").
+                        // Title and description are localized display text, so
+                        // matching on them would break on a reworded or
+                        // translated option; this does not.
+                        ["option_key"] = opt.TextKey,
                         ["title"] = SafeGetText(() => opt.Title),
                         ["description"] = SafeGetText(() => opt.Description),
                         ["is_locked"] = opt.IsLocked,
@@ -2254,6 +2412,11 @@ public static partial class McpMod
             });
         }
         state["visited"] = visited;
+
+        // What each visited point actually resolved into. `visited` above only
+        // carries the map-point TYPE, so this is the only place a "?" reports
+        // the room it became.
+        state["point_history"] = BuildMapPointHistory(runState);
 
         // Next options - read travelable state from UI nodes. Empty whenever the
         // current room is unfinished or a travel is already resolving, so the

@@ -148,6 +148,8 @@ rewards..."` (no `battle`) is the corresponding tail end.
 
 `map.boss` includes the upcoming boss coordinate plus stable `id` and readable `name` fields when the run map exposes boss identity. `map.bosses` contains all boss entries for maps with more than one boss.
 
+`map.point_history` lists the current act's visited points with the rooms they resolved into — the only place a `?` reports what it actually became. The top-level `act` block carries the act's pre-rolled encounter and event queues with their consumed counters, so a client can name the fight or event behind any map node; `run.visited_event_ids` and `profile.number_of_runs` are the extra inputs needed to replay the game's event skip and its first-run `?` override.
+
 | Action | Parameters | When to Use |
 |---|---|---|
 | `choose_map_node` | `index`: int | Travel to a node from `next_options`. Empty (and rejected) while the current room is unfinished or a travel is already resolving — see `map.travel_enabled` / `map.travel_in_flight`. |
