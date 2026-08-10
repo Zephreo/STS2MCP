@@ -279,7 +279,24 @@ public static partial class McpMod
         var runRng = BuildRngStreams(runState);
         if (runRng != null)
             runInfo["rng"] = runRng;
+        runInfo["visited_event_ids"] = runState.VisitedEventIds.Select(id => id.Entry).ToList();
         result["run"] = runInfo;
+
+        // Keep the route-planning contract identical to singleplayer. These
+        // pre-rolled queues are shared run state in co-op too; omitting them
+        // forced every multiplayer map decision onto the local-node fallback.
+        var actInfo = BuildActState(runState);
+        if (actInfo != null)
+            result["act"] = actInfo;
+
+        try
+        {
+            result["profile"] = new Dictionary<string, object?>
+            {
+                ["number_of_runs"] = runState.UnlockState.NumberOfRuns
+            };
+        }
+        catch { }
 
         // All players summary (always included for multiplayer)
         result["players"] = BuildAllPlayersState(runState);

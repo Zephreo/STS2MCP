@@ -118,7 +118,9 @@ public static partial class McpMod
             "Begone" or "Transfigure" or "EntropyPower" => "transform",
             "Nightmare" or "DualWield" => "copy",
             "Snap" or "WellLaidPlansPower" => "retain",
-            "GamblersBrew" or "GamblingChip" or "ToolsOfTheTradePower" => "discard",
+            "Acrobatics" or "DaggerThrow" or "HiddenDaggers" or "Prepared" or "Survivor"
+                or "GamblersBrew" or "GamblingChip" or "ToolsOfTheTradePower"
+                => "discard",
             _ when methodName.Contains("FromChooseACard", StringComparison.Ordinal) => "generated_to_hand",
             _ => "origin_specific",
         };
