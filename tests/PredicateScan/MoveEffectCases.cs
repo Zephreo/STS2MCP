@@ -171,6 +171,46 @@ public sealed class MoveBodies : MegaCrit.Sts2.Core.Models.MonsterModel
             await PowerCmd.Apply(new ThrowingPlayerChoiceContext(), dampen, target, 1m, base.Creature, null);
     }
 
+    /// <summary>
+    /// `SpectralKnight.HexMove`: the GENERIC single-`Creature` overload aimed at
+    /// a loop variable over the move's targets — the player, not the mover.
+    /// Reading the parameter type alone called this a self-buff.
+    /// </summary>
+    public async Task GenericPowerOnLoopTarget(IReadOnlyList<Creature> targets)
+    {
+        foreach (Creature target in targets)
+            await PowerCmd.Apply<WeakPower>(new ThrowingPlayerChoiceContext(), target, 2m, base.Creature, null);
+    }
+
+    /// <summary>
+    /// `TheObscura.WailMove`: the GENERIC collection overload aimed at the
+    /// mover's OWN side. Reading the parameter type alone handed the player 3
+    /// Strength every time this move ran.
+    /// </summary>
+    public async Task GenericPowerOnOwnSide(IReadOnlyList<Creature> targets) =>
+        await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(),
+            base.Creature.CombatState.GetTeammatesOf(base.Creature), 3m, base.Creature, null);
+
+    /// <summary>
+    /// `Rocket.TargetingReticleMove`: the same overload over `GetOpponentsOf`,
+    /// which really is the player side and must stay one.
+    /// </summary>
+    public async Task GenericPowerOnOpponents(IReadOnlyList<Creature> targets) =>
+        await PowerCmd.Apply<FrailPower>(new ThrowingPlayerChoiceContext(),
+            base.CombatState.GetOpponentsOf(base.Creature), 1m, base.Creature, null);
+
+    /// <summary>
+    /// A self-buff after an own-side one: the flag must not survive its own
+    /// apply, or every later effect in the move would inherit the side.
+    /// </summary>
+    public async Task OwnSideThenSelf(IReadOnlyList<Creature> targets)
+    {
+        await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(),
+            base.Creature.CombatState.GetTeammatesOf(base.Creature), 3m, base.Creature, null);
+        await PowerCmd.Apply<IntangiblePower>(new ThrowingPlayerChoiceContext(),
+            base.Creature, 2m, base.Creature, null);
+    }
+
     // --- Damage calcs, as `SingleAttackIntent` receives them ---
 
     /// <summary>`TheForgotten.DreadDamage`: base plus the attacker's own Dexterity.</summary>
@@ -196,4 +236,7 @@ public sealed class MoveBodies : MegaCrit.Sts2.Core.Models.MonsterModel
 public class CombatStateStub
 {
     public CardModel CreateCard<T>(Player? player) where T : CardModel, new() => new T();
+
+    /// <summary>The player side, which is what `Rocket.TargetingReticleMove` buffs.</summary>
+    public IReadOnlyList<Creature> GetOpponentsOf(Creature creature) => Array.Empty<Creature>();
 }

@@ -45,9 +45,6 @@ public static partial class McpMod
     // Everything is read via cached reflection so a game update that renames a
     // stream degrades to omitting that stream rather than crashing.
 
-    private static PropertyInfo? _rngSeedProp;
-    private static PropertyInfo? _rngCounterProp;
-
     private static readonly Dictionary<Type, PropertyInfo[]> _rngSetProps = new();
     private static readonly Dictionary<Type, FieldInfo?> _rngSetDictField = new();
     private static readonly Dictionary<Type, PropertyInfo[]> _oddsSetProps = new();
@@ -72,7 +69,9 @@ public static partial class McpMod
             // `new Rng(runState.Rng.Seed, $"act_{act}_map")` derived purely from
             // this seed, so a consumer can reconstruct the whole layout (and any
             // other ad-hoc `new Rng(Seed, name)` stream) from run_seed alone.
-            streams["run_seed"] = rngSet.Seed;
+            var runSeed = SafeGet(() => GetInstanceMemberValue(rngSet, "Seed"));
+            if (runSeed != null)
+                streams["run_seed"] = runSeed;
             streams["run_string_seed"] = rngSet.StringSeed;
 
             SweepRngSet(rngSet, streams);
@@ -230,24 +229,46 @@ public static partial class McpMod
     }
 
     /// <summary>
-    /// {seed, counter} for a single Rng, or null if it does not look like one.
+    /// Stable builds expose {seed, counter}; beta builds expose {state, counter}.
     /// </summary>
     private static Dictionary<string, object?>? RngCoords(object? rng)
     {
         if (rng == null)
             return null;
 
-        _rngSeedProp ??= rng.GetType().GetProperty("Seed", BindingFlags.Public | BindingFlags.Instance);
-        _rngCounterProp ??= rng.GetType().GetProperty("Counter", BindingFlags.Public | BindingFlags.Instance);
+        // Main-branch builds through v0.107 expose the constructor seed and a
+        // consumed-value counter directly. Keep that wire shape unchanged.
+        var seed = SafeGet(() => GetInstanceMemberValue(rng, "Seed"));
+        var counter = SafeGet(() => GetInstanceMemberValue(rng, "Counter"));
+        if (seed != null && counter != null)
+        {
+            return new Dictionary<string, object?>
+            {
+                ["seed"] = seed,
+                ["counter"] = counter,
+            };
+        }
 
-        var seed = SafeGet(() => _rngSeedProp?.GetValue(rng));
-        var counter = SafeGet(() => _rngCounterProp?.GetValue(rng));
-        if (seed == null || counter == null)
+        // v0.110 made the seed unrecoverable and serializes the live xoshiro
+        // state instead. Reflection keeps this DLL loadable on older builds,
+        // where neither ToSerializable nor SerializableRng exists.
+        var serialized = SafeGet(() => rng.GetType()
+            .GetMethod("ToSerializable", BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null)
+            ?.Invoke(rng, null));
+        if (serialized == null)
+            return null;
+
+        counter = SafeGet(() => GetInstanceMemberValue(serialized, "counter"));
+        var state = new object?[4];
+        for (int i = 0; i < state.Length; i++)
+            state[i] = SafeGet(() => GetInstanceMemberValue(serialized, $"state{i}"));
+
+        if (counter == null || Array.Exists(state, word => word == null))
             return null;
 
         return new Dictionary<string, object?>
         {
-            ["seed"] = seed,
+            ["state"] = state,
             ["counter"] = counter,
         };
     }

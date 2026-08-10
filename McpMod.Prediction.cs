@@ -85,17 +85,19 @@ public static partial class McpMod
                 return null;
 
             var rng = monster.RunRng.MonsterAi;
+            var rngCoords = RngCoords(rng);
+            if (rngCoords == null)
+                return null;
             var stateLog = new List<string>(machine.StateLog.Count);
             foreach (var logged in machine.StateLog)
                 stateLog.Add(logged.Id);
 
-            return new Dictionary<string, object?>
+            var result = new Dictionary<string, object?>
             {
                 ["initial_state"] = initial.Id,
                 ["current_state"] = current.Id,
                 ["state_log"] = stateLog,
-                ["rng_seed"] = rng.Seed,
-                ["rng_counter"] = rng.Counter,
+                ["rng_counter"] = rngCoords["counter"],
                 ["conditional_values_are_snapshots"] = hasConditionalSnapshots,
                 // Set when a weight lambda was seen to read live state, rather
                 // than for a named monster: any shipped or modded machine whose
@@ -103,6 +105,11 @@ public static partial class McpMod
                 ["random_weights_are_snapshots"] = hasWeightSnapshots,
                 ["states"] = states,
             };
+            if (rngCoords.TryGetValue("seed", out var seed))
+                result["rng_seed"] = seed;
+            if (rngCoords.TryGetValue("state", out var rngState))
+                result["rng_state"] = rngState;
+            return result;
         }
         catch
         {

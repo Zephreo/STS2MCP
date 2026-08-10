@@ -14,9 +14,16 @@ public static partial class McpMod
     // read from the move lambda's IL.  Game code funnels every effect through
     // a handful of command methods, so the calls are recognizable:
     //   PowerCmd.Apply<StrengthPower>(ctx, target|targets, amount, ...)
-    //     - generic arg = the power class; the target parameter's type tells
-    //       who receives it (Creature = the monster itself / a single ally,
-    //       IEnumerable = the player side)
+    //     - generic arg = the power class. The parameter TYPE alone does not
+    //       say who receives it, so the expression that produced the argument
+    //       decides, exactly as it does for GainBlock below: a single Creature
+    //       is "self" only when it came from the monster's own `Creature`, and
+    //       a collection is "player" only when it did not come from
+    //       `GetTeammatesOf` (the mover's own side). Anything else exports
+    //       "unknown", which the consumer drops and flags — SpectralKnight's
+    //       Hex aims a single-Creature apply at the player and TheObscura's
+    //       Wail aims a collection apply at its own side, so assuming from the
+    //       type silently buffed the wrong creature in both directions.
     //   CreatureCmd.GainBlock(creature, amount, ...)
     //     - the creature expression decides whose Block this is. Nearly every
     //       move shields itself, but `Guardbot.GuardMove` shields
@@ -156,6 +163,16 @@ public static partial class McpMod
         /// </remarks>
         internal bool TargetWasSelf;
         /// <summary>
+        /// Whether the collection expression evaluated so far in this argument
+        /// run came from `GetTeammatesOf` — the mover's own side.
+        /// </summary>
+        internal bool LastCollectionIsOwnSide;
+        /// <summary>
+        /// The above, sampled when the amount was converted, for the same
+        /// reason <see cref="TargetWasSelf"/> is.
+        /// </summary>
+        internal bool TargetWasOwnSide;
+        /// <summary>
         /// The object the argument expression evaluated so far has reached, so a
         /// getter declared on neither the monster nor a static type still has a
         /// receiver to be invoked against.
@@ -232,6 +249,7 @@ public static partial class McpMod
             _pendingDecimal = amount;
             _hasPendingDecimal = true;
             TargetWasSelf = LastCreatureIsSelf;
+            TargetWasOwnSide = LastCollectionIsOwnSide;
         }
 
         /// <summary>The amount for the effect being emitted, consuming it so the
@@ -254,6 +272,7 @@ public static partial class McpMod
             // The next statement's arguments start fresh, so a loop body cannot
             // inherit the previous iteration's applier or receiver chain.
             LastCreatureIsSelf = false;
+            LastCollectionIsOwnSide = false;
             LastObject = null;
         }
     }
@@ -626,19 +645,29 @@ public static partial class McpMod
         if (owner == "PowerCmd" && mm.Name == "Apply" && mm is MethodInfo applyMi)
         {
             var pars = applyMi.GetParameters();
-            string? powerName;
-            bool playerSide;
             if (applyMi.IsGenericMethod)
             {
-                powerName = applyMi.GetGenericArguments().FirstOrDefault()?.Name;
-                // Apply(ctx, Creature target, ...) buffs a single creature (the
-                // monster itself in practice); Apply(ctx, IEnumerable targets,
-                // ...) hits the player side.
-                playerSide = pars.Length > 1
+                string? powerName = applyMi.GetGenericArguments().FirstOrDefault()?.Name;
+                bool collection = pars.Length > 1
                     && typeof(IEnumerable).IsAssignableFrom(pars[1].ParameterType)
                     && pars[1].ParameterType != typeof(string);
+                // Who receives it comes from the argument expression, not from
+                // the parameter type. A collection is the player side unless it
+                // came from `GetTeammatesOf`; a single Creature is the monster
+                // itself only when it came from its own `Creature`. Everything
+                // else — a loop variable over the move's targets, a teammate
+                // picked out of a filtered list — is an honest unknown.
+                string? side = collection
+                    ? (scan.TargetWasOwnSide ? null : "player")
+                    : (scan.TargetWasSelf ? "self" : null);
+                scan.Applies.Add(new Dictionary<string, object?>
+                {
+                    ["power"] = powerName,
+                    ["target"] = side ?? "unknown",
+                    ["amount"] = scan.TakeAmount(),
+                });
+                return;
             }
-            else
             {
                 // Apply(ctx, PowerModel power, Creature target, ...) applies an
                 // instance built at runtime. Its target parameter is a single
@@ -646,21 +675,22 @@ public static partial class McpMod
                 // expression that produced that creature: the monster's own
                 // `Creature` property means self, anything else (a loop
                 // variable over the move's targets) means the player side.
-                powerName = scan.PendingPower;
-                playerSide = !scan.TargetWasSelf;
+                // Every shipped use of this overload does aim at the players.
+                string? powerName = scan.PendingPower;
+                bool playerSide = !scan.TargetWasSelf;
                 scan.PendingPower = null;
                 if (powerName == null)
                 {
                     scan.TakeAmount();
                     return;
                 }
+                scan.Applies.Add(new Dictionary<string, object?>
+                {
+                    ["power"] = powerName,
+                    ["target"] = playerSide ? "player" : "self",
+                    ["amount"] = scan.TakeAmount(),
+                });
             }
-            scan.Applies.Add(new Dictionary<string, object?>
-            {
-                ["power"] = powerName,
-                ["target"] = playerSide ? "player" : "self",
-                ["amount"] = scan.TakeAmount(),
-            });
         }
         else if (owner == "CreatureCmd" && mm.Name == "GainBlock")
         {
@@ -686,6 +716,14 @@ public static partial class McpMod
                 }
             }
             scan.PendingRecipient = null;
+        }
+        else if (mm.Name == "GetTeammatesOf")
+        {
+            // `CombatState.GetTeammatesOf(c)` is the mover's OWN side, owner
+            // included. Set after `EndArgumentRun` above so it survives into
+            // the apply that consumes the collection, and cleared by that
+            // apply's own run — the same lifetime `LastCreatureIsSelf` has.
+            scan.LastCollectionIsOwnSide = true;
         }
         else if (owner == "CreatureCmd" && mm.Name.Contains("Heal"))
         {

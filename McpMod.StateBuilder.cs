@@ -1245,6 +1245,7 @@ public static partial class McpMod
         var lobby = GetInstanceFieldValue(loadLobby, "_runLobby") as LoadRunLobby;
         if (lobby != null)
         {
+            var connectedPlayers = GetLoadLobbyPlayers(lobby);
             var info = new Dictionary<string, object?>
             {
                 ["type"] = lobby.NetService.Type switch
@@ -1273,7 +1274,7 @@ public static partial class McpMod
             catch { }
 
             info["expected_player_count"] = lobby.Run?.Players?.Count ?? 0;
-            info["connected_player_count"] = lobby.ConnectedPlayerIds?.Count ?? 0;
+            info["connected_player_count"] = connectedPlayers.Count;
 
             // LoadRunLobby no longer exposes IsAboutToBeginGame in the public game API,
             // so derive the same readiness summary from connected players and ready flags.
@@ -1282,11 +1283,9 @@ public static partial class McpMod
             try
             {
                 var runPlayers = lobby.Run?.Players;
-                var connectedPlayerIds = lobby.ConnectedPlayerIds;
                 aboutToBegin = runPlayers != null
-                    && connectedPlayerIds != null
                     && runPlayers.Count > 0
-                    && runPlayers.All(player => connectedPlayerIds.Contains(player.NetId) && lobby.IsPlayerReady(player.NetId));
+                    && runPlayers.All(player => connectedPlayers.TryGetValue(player.NetId, out var ready) && ready);
             }
             catch { }
             info["all_ready"] = aboutToBegin;
@@ -1300,9 +1299,7 @@ public static partial class McpMod
                 {
                     foreach (var sp in lobby.Run.Players)
                     {
-                        bool isConnected = lobby.ConnectedPlayerIds?.Contains(sp.NetId) ?? false;
-                        bool isReady = false;
-                        try { isReady = lobby.IsPlayerReady(sp.NetId); } catch { }
+                        bool isConnected = connectedPlayers.TryGetValue(sp.NetId, out var isReady);
                         players.Add(new Dictionary<string, object?>
                         {
                             ["id"] = sp.NetId.ToString(),
@@ -1360,6 +1357,57 @@ public static partial class McpMod
 
         result["options"] = options;
         result["message"] = "Multiplayer load lobby. Confirm to ready up; once everyone is connected and ready, the run resumes.";
+    }
+
+    /// <summary>
+    /// Returns connected load-lobby player IDs and readiness across game versions.
+    /// </summary>
+    private static Dictionary<ulong, bool> GetLoadLobbyPlayers(LoadRunLobby lobby)
+    {
+        var result = new Dictionary<ulong, bool>();
+
+        // v0.110 folds connection and readiness into a Players collection of
+        // LoadRunLobbyPlayer structs. Read its fields without referencing that
+        // beta-only type so the same DLL remains loadable on the main branch.
+        if (SafeGet(() => GetInstanceMemberValue(lobby, "Players")) is IEnumerable players)
+        {
+            foreach (var player in players)
+            {
+                if (player == null)
+                    continue;
+                var id = SafeGet(() => GetInstanceMemberValue(player, "id"));
+                var ready = SafeGet(() => GetInstanceMemberValue(player, "isReady"));
+                if (id != null && ready is bool isReady)
+                {
+                    try { result[Convert.ToUInt64(id)] = isReady; }
+                    catch { }
+                }
+            }
+            return result;
+        }
+
+        // Main-branch builds expose the connected IDs separately and retain a
+        // method for querying each player's ready flag.
+        if (SafeGet(() => GetInstanceMemberValue(lobby, "ConnectedPlayerIds")) is not IEnumerable connectedIds)
+            return result;
+
+        var readyMethod = lobby.GetType().GetMethod(
+            "IsPlayerReady",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+            null,
+            new[] { typeof(ulong) },
+            null);
+        foreach (var rawId in connectedIds)
+        {
+            try
+            {
+                var id = Convert.ToUInt64(rawId);
+                var ready = SafeGet(() => readyMethod?.Invoke(lobby, new object[] { id })) as bool? ?? false;
+                result[id] = ready;
+            }
+            catch { }
+        }
+        return result;
     }
 
     private static Dictionary<string, object?> BuildBattleState(RunState runState, CombatRoom combatRoom)

@@ -472,9 +472,11 @@ has actually started:
         // simulated HP, powers, living allies, monster deaths, and move
         // history. enabled preserves the live closure result for diagnostics.
         // Unknown modded closures use {op:"snapshot"} and set the top-level
-        // snapshot flag. rng_seed/rng_counter identify the
-        // shared MonsterAi xoshiro256** stream used by all enemies in slot
-        // order. Omitted when reflection fails or no machine exists.
+        // snapshot flag. rng_seed/rng_counter (stable) or
+        // rng_state/rng_counter (beta) identify the shared MonsterAi
+        // xoshiro256** stream used by all enemies in slot order. A beta state
+        // is already at the reported counter and must not be advanced again.
+        // Omitted when reflection fails or no machine exists.
         "intent_machine": {
           "initial_state": "BUBBLE",
           "current_state": "SEA_KICK",
@@ -527,10 +529,11 @@ has actually started:
 ### Run RNG — `run.rng` / `battle.rng_streams` / `player.rng` / enemy `rng`
 
 Every deterministic generator the game holds is exported. Each is an independent
-xoshiro256** stream seeded once (seed = owning seed + `hash(snake_case(name))`),
-with `counter` = values consumed so far. Reconstructing a stream at its counter
-and rolling it forward predicts future random results exactly. Nothing here ever
-advances a live stream.
+xoshiro256** stream with `counter` = values consumed so far. Stable builds expose
+the constructor `seed`; reconstruct it and advance by `counter`. Beta v0.110+
+instead exposes the four-word current `state`, which is already advanced to the
+reported counter and must be used directly. Nothing here ever advances a live
+stream.
 
 Streams are read via reflection: a renamed stream is omitted rather than
 crashing, and a stream added by a game update is picked up automatically (under
@@ -582,6 +585,17 @@ combat, for backwards compatibility.
 }
 ```
 
+On beta v0.110+, each stream entry uses the following shape instead. All four
+values are unsigned 64-bit integers:
+
+```jsonc
+"shuffle": {
+  "state": [13720838825685603483, 2398916695208396998,
+            17770384849984869256, 891717726879801395],
+  "counter": 42
+}
+```
+
 **`player.rng`** (and `players[i].rng` in multiplayer) — the per-player
 `PlayerRngSet`, seeded from the run seed plus the player's **slot** index.
 
@@ -607,7 +621,8 @@ current map coordinate. Omitted for canonical (non-mutable) models, whose getter
 returns the non-deterministic `Rng.Chaotic`.
 
 ```jsonc
-"rng": { "seed": 3054346722, "counter": 3 }
+"rng": { "seed": 3054346722, "counter": 3 } // stable
+// beta: { "state": [s0, s1, s2, s3], "counter": 3 }
 ```
 
 ### `hand_select` — In-Combat Card Selection

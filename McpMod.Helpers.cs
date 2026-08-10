@@ -180,6 +180,28 @@ public static partial class McpMod
         return null;
     }
 
+    private static object? GetInstanceMemberValue(object source, string memberName)
+    {
+        const System.Reflection.BindingFlags Flags =
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.Public |
+            System.Reflection.BindingFlags.NonPublic |
+            System.Reflection.BindingFlags.DeclaredOnly;
+
+        for (var type = source.GetType(); type != null; type = type.BaseType)
+        {
+            var property = type.GetProperty(memberName, Flags);
+            if (property is { CanRead: true } && property.GetIndexParameters().Length == 0)
+                return property.GetValue(source);
+
+            var field = type.GetField(memberName, Flags);
+            if (field != null)
+                return field.GetValue(source);
+        }
+
+        return null;
+    }
+
     private static void AddMenuOptionIfVisible(
         List<Dictionary<string, object?>> options,
         object owner,

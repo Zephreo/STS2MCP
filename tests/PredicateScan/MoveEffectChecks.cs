@@ -156,6 +156,21 @@ namespace STS2_MCP
             CheckApply("instanced self", nameof(MoveBodies.InstancedPowerOnSelf), 0, "SandpitPower", "self", 4);
             CheckApply("instanced target", nameof(MoveBodies.InstancedPowerOnTarget), 0,
                 "DampenPower", "player", 1);
+
+            // The generic overloads read the same expression rather than
+            // trusting the parameter type. A single Creature that is not the
+            // monster's own, and a collection that is its own side, are both
+            // honest unknowns the consumer drops and flags.
+            CheckApply("generic loop target", nameof(MoveBodies.GenericPowerOnLoopTarget), 0,
+                "WeakPower", "unknown", 2);
+            CheckApply("generic own side", nameof(MoveBodies.GenericPowerOnOwnSide), 0,
+                "StrengthPower", "unknown", 3);
+            CheckApply("generic opponents", nameof(MoveBodies.GenericPowerOnOpponents), 0,
+                "FrailPower", "player", 1);
+            CheckApply("own side then self #1", nameof(MoveBodies.OwnSideThenSelf), 0,
+                "StrengthPower", "unknown", 3);
+            CheckApply("own side then self #2", nameof(MoveBodies.OwnSideThenSelf), 1,
+                "IntangiblePower", "self", 2);
         }
     }
 }
