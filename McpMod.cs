@@ -167,6 +167,10 @@ public static partial class McpMod
         // pushed into (and pulled back out of) the game's prefs as the run context changes.
         ReconcileInstantMode();
 
+        // Reports a leaked NetLoadingHandle once it has outlived any real
+        // transition. See McpMod.LoadingDiagnostics.cs.
+        CheckLoadingHandleLeak();
+
         int processed = 0;
         while (_mainThreadQueue.TryDequeue(out var action) && processed < 10)
         {

@@ -549,6 +549,13 @@ public static partial class McpMod
         if (IsMapTravelInFlight())
             return Error("A travel is already resolving - wait for the destination room to finish loading");
 
+        // An act change leaves the new act's map drawn and travelable while it is
+        // still resolving, and travelling into that window strands the transition
+        // permanently - see GetTravelableMapPoints for the mechanism. Reported
+        // separately from the empty-options case below so the reason is legible.
+        if (IsRunTransitionInFlight())
+            return Error("A run transition is already resolving - wait for it to finish before travelling");
+
         var travelable = GetTravelableMapPoints(mapScreen);
 
         if (travelable.Count == 0)

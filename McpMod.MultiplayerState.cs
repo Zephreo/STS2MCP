@@ -258,6 +258,15 @@ public static partial class McpMod
             result["room_type"] = currentRoom?.GetType().Name;
         }
 
+        if (currentRoom is CombatRoom overlayCombat
+            && CombatManager.Instance.IsInProgress
+            && result.TryGetValue("state_type", out var overlayStateType)
+            && overlayStateType is string overlayType
+            && overlayType is "card_select" or "bundle_select")
+        {
+            result["battle"] = BuildMultiplayerBattleState(runState, overlayCombat);
+        }
+
         // Common run info
         var runInfo = new Dictionary<string, object?>
         {

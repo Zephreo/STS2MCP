@@ -749,6 +749,7 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
     ],
     "travel_enabled": true,      // false while the current room is unfinished
     "travel_in_flight": false,   // true between picking a node and the room loading
+    "transition_in_flight": false, // true while an act change is still resolving behind this map
     "nodes": [                   // Full map DAG
       {
         "col": 3, "row": 0,
@@ -782,6 +783,12 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
     "is_ancient": true,
     "in_dialogue": false,        // true = click to advance dialogue first
     "body": "Event description text...",
+    // A room transition is resolving (entering this room, or an option body
+    // still running). choose_event_option refuses every option while it is
+    // true, and every option reports is_enabled: false to match — wait, don't
+    // retry. Notably non-zero with Instant Mode, which draws the interactive
+    // event well before the game's own room fade finishes.
+    "transition_in_flight": false,
     "options": [
       {
         "index": 0,
@@ -794,7 +801,7 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
         "is_locked": false,
         "is_proceed": false,
         "was_chosen": false,
-        "is_enabled": true,                  // false while a choice is executing
+        "is_enabled": true,                  // false while a choice is executing or a transition is resolving
         "relic_name": "Relic Name",         // Only if option has a relic
         "relic_description": "Relic desc.",  // Only if option has a relic
         "keywords": [ /* Keyword Objects */ ]
@@ -964,7 +971,9 @@ Chest is auto-opened on first state query.
 
 ### `card_select` — Card Selection Overlay
 
-Covers deck transforms, upgrades, removals, and choose-a-card effects. Appears on top of any room.
+Covers deck transforms, upgrades, removals, and choose-a-card effects. Appears on top of any room. During combat the
+top-level payload also contains the full `battle` snapshot, so a client can evaluate the selection in its combat
+context rather than applying a deck-only heuristic.
 
 ```jsonc
 {
@@ -972,9 +981,22 @@ Covers deck transforms, upgrades, removals, and choose-a-card effects. Appears o
   "card_select": {
     "screen_type": "transform",  // transform, upgrade, select, simple_select, choose
     "prompt": "Choose 2 cards to Transform.",
+    "selection_id": 17,          // monotonic identity of the command that opened the overlay
+    "selection_entry_point": "FromCombatPile",
+    "selection_surface": "combat_pile", // hand, combat_pile, generated_choice, generated_bundle, deck, simple_grid
+    "selection_effect": "discard_to_draw_top", // canonical post-selection continuation; origin_specific if unknown
+    "source_pile": "discard",   // present for combat-pile selectors
+    "origin_id": "HEADBUTT",    // source model when the command receives one
+    "origin_type": "Headbutt",  // decompiled caller/model type
+    "origin_kind": "card",      // card, potion, power, relic, monster, event, or model
+    "min_select": 1,
+    "max_select": 1,
+    "manual_confirmation": false,
+    "cancelable": false,
     "cards": [
       {
         "index": 0,
+        "combat_card_id": 23,   // stable physical-card identity; combat piles only
         "id": "STRIKE_R",
         "name": "Strike",
         "type": "Attack",
@@ -993,6 +1015,7 @@ Covers deck transforms, upgrades, removals, and choose-a-card effects. Appears o
     // For "choose" type: picking is immediate (no confirm needed).
     // can_skip indicates if a skip button exists.
   },
+  "battle": { ... },            // present when this overlay is inside a live combat
   "run": { ... },
   "player": { ... }
 }
@@ -1590,10 +1613,13 @@ Travel to a map node.
 | `index` | int | Yes | 0-based index from `next_options` |
 
 `next_options` is empty (and this action errors) whenever the current room is
-not finished or a travel is already resolving — `map.travel_enabled` and
-`map.travel_in_flight` say which. Sending a travel during that window enqueues
-a second map vote on top of the one still resolving and wedges the run, so it
-is rejected rather than forwarded.
+not finished, a travel is already resolving, or an act change is still resolving
+— `map.travel_enabled`, `map.travel_in_flight` and `map.transition_in_flight`
+say which. Sending a travel during either window wedges the run: a second map
+vote lands on top of the one still resolving, and travelling during an act
+change kills the tween `RunManager.EnterAct` is awaiting, which strands its
+loading handles and disables every later event choice for the session. Both are
+rejected rather than forwarded — wait for the flags to clear.
 
 ### `select_card`
 

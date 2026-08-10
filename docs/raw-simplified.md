@@ -184,6 +184,11 @@ rewards..."` (no `battle`) is the corresponding tail end.
 
 ### Card Selection Overlay (`card_select`)
 
+In combat, the payload includes the full top-level `battle` snapshot. The overlay also reports `selection_effect`,
+`selection_surface`, `source_pile`, origin metadata, selection bounds, and a stable `combat_card_id` on cards. Clients
+can therefore model the actual continuation (move, exhaust, transform, copy, retain, and so on) instead of inferring
+it from localized prompt text. Unknown continuations are reported as `origin_specific`.
+
 | Action | Parameters | When to Use |
 |---|---|---|
 | `select_card` | `index`: int | Grid screens: toggle card selection. Choose-a-card: pick immediately. |

@@ -729,6 +729,19 @@ public static partial class McpMod
             result["room_type"] = currentRoom?.GetType().Name;
         }
 
+        // Overlay-first detection must not hide the combat snapshot. The Rust
+        // planner needs the enemies, turn, history, and RNG streams both for a
+        // fresh selection search and to validate reuse of the subtree that
+        // opened the overlay.
+        if (currentRoom is CombatRoom overlayCombat
+            && CombatManager.Instance.IsInProgress
+            && result.TryGetValue("state_type", out var overlayStateType)
+            && overlayStateType is string overlayType
+            && overlayType is "card_select" or "bundle_select")
+        {
+            result["battle"] = BuildBattleState(runState, overlayCombat);
+        }
+
         // Common run info
         var runInfo = new Dictionary<string, object?>
         {
@@ -1767,7 +1780,7 @@ public static partial class McpMod
     /// </summary>
     private static Dictionary<string, object?> BuildCardInfo(CardModel card, PileType pile = PileType.None)
     {
-        return new Dictionary<string, object?>
+        var info = new Dictionary<string, object?>
         {
             ["id"] = card.Id.Entry,
             ["name"] = SafeGetText(() => card.Title),
@@ -1779,6 +1792,16 @@ public static partial class McpMod
             ["is_upgraded"] = card.IsUpgraded,
             ["keywords"] = BuildHoverTips(card.HoverTips)
         };
+        // The multiplayer synchronizer already assigns every mutable combat
+        // card a stable 16-bit identity. Export the same identity so an MCTS
+        // selection can distinguish physical copies with equal card IDs.
+        try
+        {
+            if (card.Pile?.IsCombatPile == true)
+                info["combat_card_id"] = NetCombatCard.FromModel(card).CombatCardIndex;
+        }
+        catch { /* immutable/deck cards intentionally have no combat identity */ }
+        return info;
     }
 
     private static Dictionary<string, object?> BuildCardState(CardModel card, int index)
@@ -2040,6 +2063,20 @@ public static partial class McpMod
         // Event body text
         state["body"] = SafeGetText(() => eventModel.Description);
 
+        // A run transition in flight makes ExecuteChooseEventOption refuse EVERY
+        // option, so the options must not be advertised as clickable during it -
+        // otherwise a client re-picks the same option on every poll and gets one
+        // API error per tick until the transition lands. The window is not just
+        // the "option body is still resolving" case the action gate was written
+        // for: it also covers entry into the event room itself, and that window
+        // is wide open with Instant Mode, which draws the interactive event
+        // immediately while the game's own room fade still runs (RoomFadeIn only
+        // special-cases Fast, so Instant falls into the 0.8s branch).
+        // Deliberately the same call the action uses, so the state can never
+        // advertise an option the action would then refuse.
+        bool transitionInFlight = IsRunTransitionInFlight();
+        state["transition_in_flight"] = transitionInFlight;
+
         // Options from UI
         var options = new List<Dictionary<string, object?>>();
         if (uiRoom != null)
@@ -2071,10 +2108,11 @@ public static partial class McpMod
                         ["is_locked"] = opt.IsLocked,
                         ["is_proceed"] = opt.IsProceed,
                         ["was_chosen"] = opt.WasChosen,
-                        // False while a choice is executing (DisableOptionButtons).
-                        // choose_event_option rejects the option in that window,
+                        // False while a choice is executing (DisableOptionButtons)
+                        // or while a room transition is resolving.
+                        // choose_event_option rejects the option in both windows,
                         // so clients must not re-pick it.
-                        ["is_enabled"] = button.IsEnabled
+                        ["is_enabled"] = button.IsEnabled && !transitionInFlight
                     };
                     if (opt.Relic != null)
                     {
@@ -2425,6 +2463,9 @@ public static partial class McpMod
         var mapScreen = NMapScreen.Instance;
         state["travel_enabled"] = mapScreen != null && mapScreen.IsTravelEnabled;
         state["travel_in_flight"] = IsMapTravelInFlight();
+        // Third reason for an empty next_options: an act change is still
+        // resolving behind this map. See GetTravelableMapPoints.
+        state["transition_in_flight"] = IsRunTransitionInFlight();
 
         // Full map - all nodes organized for planning
         var nodes = new List<Dictionary<string, object?>>();
@@ -2506,6 +2547,7 @@ public static partial class McpMod
     }
 
     private static FieldInfo? _rewardsSetField;
+    private static FieldInfo? _rewardsIsTerminalField;
 
     /// <summary>
     /// True while the run is still blocked on this rewards screen's set.
@@ -2519,7 +2561,18 @@ public static partial class McpMod
     /// whatever awaited <c>RewardsSet.Offer</c> - a combat room end, or the
     /// rest-site heal Tiny Mailbox hangs its potions off - cannot continue.
     ///
-    /// The set is a private field of the screen; if a game update renames it we
+    /// A TERMINAL screen is excluded, because for it "outstanding" does not mean
+    /// "blocking" and the two conditions deadlock: proceeding from a post-combat
+    /// screen runs <c>RunManager.ProceedFromTerminalRewardsScreen</c>, which only
+    /// OPENS THE MAP - the set is not completed until the run leaves the room,
+    /// which needs a map click. So a set holding any declined reward (a potion
+    /// refused into a full belt, a skipped card) stays outstanding, masks the map
+    /// that would release it, and - since <c>AfterOverlayHidden</c> disables the
+    /// proceed button once the map opens on top - leaves a screen with nothing
+    /// claimable and can_proceed false, forever. Only a non-terminal set (a
+    /// mid-room OfferCustom) is one the run genuinely waits on.
+    ///
+    /// Both fields are private on the screen; if a game update renames either we
     /// report false, which is exactly the pre-fix behaviour (defer to the map).
     /// Only the top-of-stack screen is inspected, so a card-reward selection
     /// opened FROM a live set is not covered - no known relic or event offers a
@@ -2529,6 +2582,11 @@ public static partial class McpMod
     {
         try
         {
+            _rewardsIsTerminalField ??= typeof(NRewardsScreen)
+                .GetField("_isTerminal", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (_rewardsIsTerminalField?.GetValue(screen) is not bool isTerminal || isTerminal)
+                return false;
+
             _rewardsSetField ??= typeof(NRewardsScreen)
                 .GetField("_rewardsSet", BindingFlags.NonPublic | BindingFlags.Instance);
             if (_rewardsSetField?.GetValue(screen) is not RewardsSet set)
@@ -2647,6 +2705,7 @@ public static partial class McpMod
             index++;
         }
         state["cards"] = cards;
+        AddCardSelectionContext(state);
 
         // Preview container showing? (selection complete, awaiting confirm)
         // Upgrade screens use UpgradeSinglePreviewContainer / UpgradeMultiPreviewContainer
@@ -2738,6 +2797,7 @@ public static partial class McpMod
             index++;
         }
         state["cards"] = cards;
+        AddCardSelectionContext(state);
 
         var skipButton = screen.GetNodeOrNull<NClickableControl>("SkipButton");
         state["can_skip"] = skipButton?.IsEnabled == true && skipButton.Visible;
@@ -2778,6 +2838,7 @@ public static partial class McpMod
             index++;
         }
         state["bundles"] = bundles;
+        AddCardSelectionContext(state);
 
         var previewContainer = screen.GetNodeOrNull<Godot.Control>("%BundlePreviewContainer");
         bool previewShowing = previewContainer?.Visible == true;
@@ -2847,6 +2908,7 @@ public static partial class McpMod
             index++;
         }
         state["cards"] = selectableCards;
+        AddCardSelectionContext(state);
 
         // Already-selected cards (in the SelectedHandCardContainer)
         var selectedContainer = hand.GetNodeOrNull<Godot.Control>("%SelectedHandCardContainer");

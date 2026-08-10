@@ -409,7 +409,23 @@ public static partial class McpMod
     /// </remarks>
     internal static List<NMapPoint> GetTravelableMapPoints(NMapScreen mapScreen)
     {
-        if (mapScreen.IsTraveling)
+        // IsTraveling covers a travel started FROM this map screen. It does not
+        // cover an act change: RunManager.EnterAct opens the new act's map screen
+        // (EnterRoomInternal(new MapRoom())) and only THEN awaits its room fade,
+        // so for the length of that fade the new map is drawn with travelable
+        // points while the act transition is still in flight. Travelling into
+        // that window is not merely early, it corrupts the run: the entry we
+        // start calls NTransition.RoomFadeIn, whose first act is _tween?.Kill()
+        // on the very tween EnterAct is awaiting - and Tween.Kill() never emits
+        // `finished`, while TweenHelper.AwaitFinished only bails out when its
+        // OWNER node leaves the tree (NTransition never does). EnterAct's await
+        // therefore hangs forever, stranding its two NetLoadingHandles, and
+        // NetLoadingHandle's refcount can then never return to zero - pinning
+        // IsGameLoading true for the rest of the session, which makes every
+        // later event choice unanswerable. Diagnosed 2026-08-09 from the handle
+        // trace in McpMod.LoadingDiagnostics.cs; the window is normally hidden
+        // behind the fade animation and only reachable under Instant Mode.
+        if (mapScreen.IsTraveling || IsRunTransitionInFlight())
             return new List<NMapPoint>();
 
         return FindAll<NMapPoint>(mapScreen)
