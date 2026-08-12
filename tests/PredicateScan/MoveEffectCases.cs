@@ -211,6 +211,134 @@ public sealed class MoveBodies : MegaCrit.Sts2.Core.Models.MonsterModel
             base.Creature, 2m, base.Creature, null);
     }
 
+    /// <summary>
+    /// `OwlMagistrate.VerdictMove`: an attack, a debuff, and then the removal of
+    /// the buff its own Judicial Flight granted three turns earlier.
+    /// </summary>
+    public async Task AttackDebuffThenRemoveOwnBuff(IReadOnlyList<Creature> targets)
+    {
+        await DamageCmd.Attack(33).FromMonster(this).Execute(null);
+        await PowerCmd.Apply<FrailPower>(new ThrowingPlayerChoiceContext(), targets, 4m, base.Creature, null);
+        await PowerCmd.Remove<SoarPower>(base.Creature);
+    }
+
+    /// <summary>
+    /// A removal aimed at each of the move's targets: the player side, read by
+    /// the same rule an apply's target is.
+    /// </summary>
+    public async Task RemoveFromEachTarget(IReadOnlyList<Creature> targets)
+    {
+        foreach (Creature target in targets)
+            await PowerCmd.Remove<SoarPower>(target);
+    }
+
+    /// <summary>
+    /// A removal aimed at somebody the scan cannot place must say so rather than
+    /// be credited to the mover, exactly as a misplaced apply is.
+    /// </summary>
+    public async Task RemoveFromAFilteredAlly(IReadOnlyList<Creature> targets)
+    {
+        List<Creature> bots = base.Creature.CombatState.Enemies
+            .Where((Creature c) => c.Monster is Fabricator).ToList();
+        foreach (Creature bot in bots)
+            await PowerCmd.Remove<SoarPower>(bot);
+    }
+
+    /// <summary>
+    /// `ToughEgg.HatchMove` / `TestSubject`: two removals in one body, both self.
+    /// </summary>
+    public async Task RemoveTwoOwnPowers(IReadOnlyList<Creature> targets)
+    {
+        await PowerCmd.Remove<SoarPower>(base.Creature);
+        await PowerCmd.Remove<DampenPower>(base.Creature);
+    }
+
+    /// <summary>
+    /// A loop over a filtered list of the mover's OWN side, applying to each. The
+    /// creature is a loop variable exactly as the Spectral Knight's is, but the
+    /// collection is not `targets`, so it must stay an honest unknown.
+    /// </summary>
+    public async Task GenericPowerOnFilteredOwnSide(IReadOnlyList<Creature> targets)
+    {
+        List<Creature> bots = base.Creature.CombatState.Enemies
+            .Where((Creature c) => c.Monster is Fabricator).ToList();
+        foreach (Creature bot in bots)
+            await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(), bot, 2m, base.Creature, null);
+    }
+
+    /// <summary>
+    /// A body that loops over its own side and THEN over its targets: the second
+    /// loop must not inherit the first loop's collection.
+    /// </summary>
+    public async Task OwnSideLoopThenTargetLoop(IReadOnlyList<Creature> targets)
+    {
+        List<Creature> bots = base.Creature.CombatState.Enemies
+            .Where((Creature c) => c.Monster is Fabricator).ToList();
+        foreach (Creature bot in bots)
+            await CreatureCmd.GainBlock(bot, 15m, ValueProp.Move, null);
+        foreach (Creature target in targets)
+            await PowerCmd.Apply<WeakPower>(new ThrowingPlayerChoiceContext(), target, 2m, base.Creature, null);
+    }
+
+    /// <summary>
+    /// `Entomancer.SpitMove`: the applies differ by branch, and a linear scan
+    /// records both sides. The export is their SUM, which is why the body has to
+    /// declare that it branched.
+    /// </summary>
+    public async Task BranchedApplies(IReadOnlyList<Creature> targets)
+    {
+        PersonalHivePower hive = base.Creature.GetPower<PersonalHivePower>();
+        if (hive.Amount < 3)
+        {
+            await PowerCmd.Apply<PersonalHivePower>(new ThrowingPlayerChoiceContext(), base.Creature,
+                1m, base.Creature, null);
+            await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(), base.Creature,
+                1m, base.Creature, null);
+        }
+        else
+        {
+            await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(), base.Creature,
+                2m, base.Creature, null);
+        }
+    }
+
+    /// <summary>
+    /// `LivingFog.BloatMove`: a loop that adds a creature, then an attack. The
+    /// class name in the generic argument is the only part of a summon a static
+    /// read can recover.
+    /// </summary>
+    public async Task SummonThenAttack(IReadOnlyList<Creature> targets)
+    {
+        for (int i = 0; i < 1; i++)
+        {
+            string slot = "second";
+            if (!string.IsNullOrEmpty(slot))
+                await CreatureCmd.Add<GasBomb>(base.CombatState, slot);
+        }
+        await DamageCmd.Attack(5).FromMonster(this).Execute(null);
+    }
+
+    /// <summary>
+    /// `Fogmog.IllusionMove`: the slot is a string LITERAL, and the sound and
+    /// animation names before it must not be mistaken for one.
+    /// </summary>
+    public async Task SummonAtALiteralSlot(IReadOnlyList<Creature> targets)
+    {
+        await CreatureCmd.TriggerAnim(base.Creature, "Summon", 0.75f);
+        await CreatureCmd.Add<GasBomb>(base.CombatState, "illusion");
+    }
+
+    /// <summary>
+    /// `Fabricator.FabricateMove`: the non-generic overload, whose model is
+    /// picked at runtime. Nothing static names the creature, so it must export
+    /// no summon at all rather than a wrong one.
+    /// </summary>
+    public async Task SummonAModelChosenAtRuntime(IReadOnlyList<Creature> targets)
+    {
+        MegaCrit.Sts2.Core.Models.MonsterModel picked = new GasBomb();
+        await CreatureCmd.Add(picked, base.CombatState, 0, "second");
+    }
+
     // --- Damage calcs, as `SingleAttackIntent` receives them ---
 
     /// <summary>`TheForgotten.DreadDamage`: base plus the attacker's own Dexterity.</summary>

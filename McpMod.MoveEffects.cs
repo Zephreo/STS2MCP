@@ -101,6 +101,29 @@ public static partial class McpMod
     private sealed class MoveFxScan
     {
         internal readonly List<Dictionary<string, object?>> Applies = new();
+        /// <summary>Powers the move takes back off a creature.</summary>
+        /// <remarks>
+        /// A move that grants a power for a fixed span and then removes it
+        /// exports only half of itself without this. `OwlMagistrate` is the
+        /// shipped case that matters: its Judicial Flight applies `SoarPower`
+        /// (which halves the incoming powered attacks the PLAYER deals) and its
+        /// Verdict removes it again, so reading only the grant leaves a consumer
+        /// believing the Magistrate is permanently armoured — an understatement
+        /// of the player's own damage, which is the direction a search must
+        /// never be wrong in.
+        /// </remarks>
+        internal readonly List<Dictionary<string, object?>> Removes = new();
+        /// <summary>Creatures the move adds to the mover's own side.</summary>
+        /// <remarks>
+        /// `CreatureCmd.Add&lt;T&gt;(combatState, slot)` names the monster in its
+        /// generic argument, which is the one thing about a summon a static read
+        /// can recover — everything else (the spawn's HP roll, its powers, its
+        /// move machine) is a property of the class, and the consumer looks
+        /// those up in its own decomp-derived catalog. The non-generic
+        /// `Add(MonsterModel, …)` overload takes a model picked at runtime
+        /// (`Fabricator` rolls between two) and stays unreadable.
+        /// </remarks>
+        internal readonly List<Dictionary<string, object?>> Summons = new();
         internal int? Block;
         /// <summary>Block granted to another creature on the mover's own side.</summary>
         internal readonly List<Dictionary<string, object?>> AllyBlock = new();
@@ -168,10 +191,79 @@ public static partial class McpMod
         /// </summary>
         internal bool LastCollectionIsOwnSide;
         /// <summary>
+        /// Whether a collection derived from <c>GetTeammatesOf</c> is waiting
+        /// to be enumerated.
+        /// </summary>
+        /// <remarks>
+        /// A call such as <c>GetTeammatesOf(...).ToList()</c> crosses several
+        /// argument runs before its eventual <c>GetEnumerator</c>. Keeping the
+        /// provenance here lets a creature pulled from that enumerator remain
+        /// an ally target instead of becoming an unknown single creature.
+        /// </remarks>
+        internal bool PendingOwnSideCollection;
+        /// <summary>
         /// The above, sampled when the amount was converted, for the same
         /// reason <see cref="TargetWasSelf"/> is.
         /// </summary>
         internal bool TargetWasOwnSide;
+        /// <summary>
+        /// Whether the collection reached in this argument run is the move's own
+        /// <c>targets</c> parameter — the player side, by definition.
+        /// </summary>
+        internal bool LastCollectionIsTargets;
+        /// <summary>
+        /// Whether the enumerator currently being read was opened over that
+        /// parameter.
+        /// </summary>
+        /// <remarks>
+        /// Sticky, unlike the argument-run flags: `GetEnumerator` and the
+        /// `get_Current` inside the loop are separated by the whole loop header,
+        /// so an argument run cannot be what carries it. A `GetEnumerator` over
+        /// anything else clears it, which is what keeps `Guardbot`'s loop over a
+        /// filtered enemy list from reading as a loop over the players.
+        /// </remarks>
+        internal bool EnumeratingTargets;
+        /// <summary>Whether the active enumerator walks the mover's side.</summary>
+        internal bool EnumeratingOwnSide;
+        /// <summary>A creature just taken out of that enumerator, awaiting its store.</summary>
+        internal bool PendingTargetCreature;
+        /// <summary>An ally creature just taken from the active enumerator.</summary>
+        internal bool PendingAllyCreature;
+        /// <summary>Field tokens holding a creature taken from <c>targets</c>.</summary>
+        internal readonly HashSet<int> TargetCreatureFields = new();
+        /// <summary>Field tokens holding a creature taken from the mover's side.</summary>
+        internal readonly HashSet<int> AllyCreatureFields = new();
+        /// <summary>Local slots holding a creature taken from <c>targets</c>.</summary>
+        internal readonly HashSet<int> TargetCreatureLocals = new();
+        /// <summary>Local slots holding a creature taken from the mover's side.</summary>
+        internal readonly HashSet<int> AllyCreatureLocals = new();
+        /// <summary>
+        /// Whether the creature expression evaluated so far in this argument run
+        /// came out of the move's <c>targets</c>.
+        /// </summary>
+        internal bool LastCreatureIsTarget;
+        /// <summary>Whether the current creature expression produced an ally.</summary>
+        internal bool LastCreatureIsAlly;
+        /// <summary>
+        /// The above, sampled when the amount was converted, for the same reason
+        /// <see cref="TargetWasSelf"/> is.
+        /// </summary>
+        internal bool TargetWasTarget;
+        /// <summary>Whether the sampled apply target was an ally creature.</summary>
+        internal bool TargetWasAlly;
+        /// <summary>
+        /// The last string literal pushed in this argument run.
+        /// </summary>
+        /// <remarks>
+        /// `CreatureCmd.Add&lt;T&gt;` takes its slot either as a literal
+        /// (`Fogmog` and `TheObscura` both pass `"illusion"`) or as a local the
+        /// move computed from `Encounter.GetNextSlot`. A literal names the slot
+        /// outright and the game performs no occupancy check on it; a computed
+        /// one means the consumer must replay `GetNextSlot` itself. Cleared by
+        /// <see cref="EndArgumentRun"/>, so the sound-effect and animation names
+        /// every move body is full of cannot leak into the call after them.
+        /// </remarks>
+        internal string? LastString;
         /// <summary>
         /// The object the argument expression evaluated so far has reached, so a
         /// getter declared on neither the monster nor a static type still has a
@@ -183,8 +275,8 @@ public static partial class McpMod
         private bool _hasPendingDecimal;
 
         internal bool IsEmpty =>
-            Applies.Count == 0 && Block == null && AllyBlock.Count == 0
-            && Heal == null && StatusCards.Count == 0;
+            Applies.Count == 0 && Removes.Count == 0 && Summons.Count == 0 && Block == null
+            && AllyBlock.Count == 0 && Heal == null && StatusCards.Count == 0;
 
         internal void PushInt(int? value)
         {
@@ -250,6 +342,8 @@ public static partial class McpMod
             _hasPendingDecimal = true;
             TargetWasSelf = LastCreatureIsSelf;
             TargetWasOwnSide = LastCollectionIsOwnSide;
+            TargetWasTarget = LastCreatureIsTarget;
+            TargetWasAlly = LastCreatureIsAlly;
         }
 
         /// <summary>The amount for the effect being emitted, consuming it so the
@@ -273,6 +367,10 @@ public static partial class McpMod
             // inherit the previous iteration's applier or receiver chain.
             LastCreatureIsSelf = false;
             LastCollectionIsOwnSide = false;
+            LastCollectionIsTargets = false;
+            LastCreatureIsTarget = false;
+            LastCreatureIsAlly = false;
+            LastString = null;
             LastObject = null;
         }
     }
@@ -298,10 +396,15 @@ public static partial class McpMod
         foreach (var body in bodies)
             WalkForEffects(body, monster, scan);
 
-        if (scan.IsEmpty)
-            return null;
         var fx = new Dictionary<string, object?>();
         if (scan.Applies.Count > 0) fx["applies"] = scan.Applies;
+        // Powers the move takes back. A consumer that predates this key simply
+        // keeps a power the move removes, which is what every build did before.
+        if (scan.Removes.Count > 0) fx["removes"] = scan.Removes;
+        // Creatures the move adds. One entry per `CreatureCmd.Add<T>` call site;
+        // a loop around one is still one call, so a move that spawns several
+        // relies on the consumer's catalog for the count.
+        if (scan.Summons.Count > 0) fx["summons"] = scan.Summons;
         if (scan.Block != null) fx["block"] = scan.Block;
         // Block the move puts on someone else. Kept out of "block" so a
         // consumer never credits it to the mover; a null "monster" means the
@@ -318,7 +421,160 @@ public static partial class McpMod
             fx["status_card"] = scan.StatusCards[0]["card"];
             fx["status"] = scan.StatusCards;
         }
-        return fx;
+        AddStatefulMoveSemantics(monster, move, fx);
+        return fx.Count == 0 ? null : fx;
+    }
+
+    /// <summary>Exports mechanics whose meaning spans multiple move executions.</summary>
+    /// <remarks>
+    /// The linear command scan deliberately reports one execution only. These
+    /// descriptors preserve source state that changes later executions, looped
+    /// commands, and player-controlled effects. Values are read from the live
+    /// monster where they are mutable; the descriptor names only the source
+    /// operation the consumer must replay.
+    /// </remarks>
+    private static void AddStatefulMoveSemantics(
+        MonsterModel monster,
+        MoveState move,
+        Dictionary<string, object?> fx)
+    {
+        string monsterName = monster.GetType().Name;
+        switch ((monsterName, move.Id))
+        {
+            case ("Aeonglass", "INCREASING_INTENSITY_MOVE"):
+                fx["upgrade_status"] = new Dictionary<string, object?>
+                {
+                    ["card"] = "Wither",
+                    ["damage_per_level"] = 3,
+                    ["current_level"] = ReadMonsterInt(monster, "WitherUpgradeCount"),
+                };
+                fx["repeat_power_growth"] = new Dictionary<string, object?>
+                {
+                    ["power"] = "StrengthPower",
+                    ["amount"] = 1,
+                };
+                break;
+
+            case ("Entomancer", "PHEROMONE_SPIT_MOVE"):
+                // A linear scan sees both arms. The source chooses one from the
+                // live Personal Hive amount, so discard those unconditional
+                // entries and export the branch itself.
+                fx.Remove("applies");
+                fx["conditional_applies"] = new Dictionary<string, object?>
+                {
+                    ["power"] = "PersonalHivePower",
+                    ["cmp"] = "lt",
+                    ["value"] = 3,
+                    ["then"] = new[]
+                    {
+                        new Dictionary<string, object?> { ["power"] = "PersonalHivePower", ["amount"] = 1 },
+                        new Dictionary<string, object?> { ["power"] = "StrengthPower", ["amount"] = 1 },
+                    },
+                    ["else"] = new[]
+                    {
+                        new Dictionary<string, object?> { ["power"] = "StrengthPower", ["amount"] = 2 },
+                    },
+                };
+                break;
+
+            case ("Fabricator", "FABRICATE_MOVE"):
+                fx["random_summon_pools"] = new[]
+                {
+                    new[] { "Guardbot", "Noisebot" },
+                    new[] { "Zapbot", "Stabbot" },
+                };
+                break;
+
+            case ("Fabricator", "FABRICATING_STRIKE_MOVE"):
+                fx["random_summon_pools"] = new[] { new[] { "Zapbot", "Stabbot" } };
+                break;
+
+            case ("Queen", "BURN_BRIGHT_FOR_ME_MOVE"):
+                fx["applies"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["power"] = "StrengthPower",
+                        ["target"] = "ally",
+                        ["amount"] = 1,
+                    },
+                };
+                break;
+
+            case ("TestSubject", "MULTI_CLAW_MOVE"):
+                fx["repeat_hit_growth"] = 1;
+                break;
+
+            case ("TheInsatiable", "LIQUIFY_GROUND_MOVE"):
+                fx["status_card"] = "Frantic Escape";
+                fx["status"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["card"] = "Frantic Escape", ["pile"] = "Draw", ["count"] = 3,
+                        ["position"] = "Random",
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["card"] = "Frantic Escape", ["pile"] = "Discard", ["count"] = 3,
+                        ["position"] = "Random",
+                    },
+                };
+                break;
+
+            case ("ToughEgg", "HATCH_MOVE"):
+                fx["hatch"] = new Dictionary<string, object?>
+                {
+                    ["min_hp"] = ReadMonsterInt(monster, "HatchlingMinHp"),
+                    ["max_hp"] = ReadMonsterInt(monster, "HatchlingMaxHp"),
+                };
+                break;
+
+            case ("ThievingHopper", "THIEVERY_MOVE"):
+                fx["steal_card"] = true;
+                break;
+
+            case ("KnowledgeDemon", "CURSE_OF_KNOWLEDGE_MOVE"):
+                fx["knowledge_choice"] = ReadMonsterInt(monster, "CurseOfKnowledgeCounter");
+                break;
+
+            case ("WaterfallGiant", "PRESSURE_GUN_MOVE"):
+                fx["repeat_damage_growth"] = 5;
+                break;
+        }
+
+        if (monsterName == "Ovicopter" && move.Id == "LAY_EGGS_MOVE"
+            && fx.TryGetValue("summons", out object? summonsObject)
+            && summonsObject is List<Dictionary<string, object?>> summons)
+        {
+            foreach (var summon in summons)
+            {
+                summon["count"] = 3;
+                summon["slot_order"] = "last";
+            }
+        }
+        if (monsterName == "TwoTailedRat" && move.Id == "CALL_FOR_BACKUP_MOVE"
+            && fx.TryGetValue("summons", out summonsObject)
+            && summonsObject is List<Dictionary<string, object?>> ratSummons)
+        {
+            foreach (var summon in ratSummons)
+                summon["slot_order"] = "last";
+        }
+    }
+
+    /// <summary>Reads one integer property from the live monster.</summary>
+    private static int? ReadMonsterInt(MonsterModel monster, string propertyName)
+    {
+        try
+        {
+            return monster.GetType()
+                .GetProperty(propertyName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?
+                .GetValue(monster) as int?;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static void WalkForEffects(MethodBase method, MonsterModel monster, MoveFxScan scan)
@@ -327,6 +583,20 @@ public static partial class McpMod
         if (il == null)
             return;
         var module = method.Module;
+
+        // Which argument is the move's own `targets` list. Every move body is
+        // `Task XxxMove(IReadOnlyList<Creature> targets)`, and that list IS the
+        // player side — so a creature taken out of it is a player-side target,
+        // however the apply overload's parameter happens to be typed. The async
+        // rewrite hoists the parameter into a field of the same name, which is
+        // how the state machine half of the walk finds it.
+        int targetsArg = -1;
+        var parameters = method.GetParameters();
+        for (int p = 0; p < parameters.Length; p++)
+        {
+            if (parameters[p].Name == "targets")
+                targetsArg = method.IsStatic ? p : p + 1;
+        }
 
         int i = 0;
         while (i < il.Length)
@@ -368,6 +638,61 @@ public static partial class McpMod
             }
             switch (op)
             {
+                // Argument and local traffic, tracked only to follow one creature
+                // from the move's `targets` to the apply that consumes it. The
+                // loop variable is a plain local in a sync body and a hoisted
+                // field in an async one, so both routes are followed.
+                case >= 0x02 and <= 0x05:   // ldarg.0 .. ldarg.3
+                    if (op - 0x02 == targetsArg)
+                        scan.LastCollectionIsTargets = true;
+                    i += 1; break;
+                case 0x0E:                  // ldarg.s
+                    if (il[i + 1] == targetsArg)
+                        scan.LastCollectionIsTargets = true;
+                    i += 2; break;
+                case >= 0x06 and <= 0x09:   // ldloc.0 .. ldloc.3
+                    if (scan.TargetCreatureLocals.Contains(op - 0x06))
+                        scan.LastCreatureIsTarget = true;
+                    if (scan.AllyCreatureLocals.Contains(op - 0x06))
+                        scan.LastCreatureIsAlly = true;
+                    i += 1; break;
+                case 0x11:                  // ldloc.s
+                    if (scan.TargetCreatureLocals.Contains(il[i + 1]))
+                        scan.LastCreatureIsTarget = true;
+                    if (scan.AllyCreatureLocals.Contains(il[i + 1]))
+                        scan.LastCreatureIsAlly = true;
+                    i += 2; break;
+                case >= 0x0A and <= 0x0D:   // stloc.0 .. stloc.3
+                    if (scan.PendingTargetCreature)
+                        scan.TargetCreatureLocals.Add(op - 0x0A);
+                    if (scan.PendingAllyCreature)
+                        scan.AllyCreatureLocals.Add(op - 0x0A);
+                    scan.PendingTargetCreature = false;
+                    scan.PendingAllyCreature = false;
+                    i += 1; break;
+                case 0x13:                  // stloc.s
+                    if (scan.PendingTargetCreature)
+                        scan.TargetCreatureLocals.Add(il[i + 1]);
+                    if (scan.PendingAllyCreature)
+                        scan.AllyCreatureLocals.Add(il[i + 1]);
+                    scan.PendingTargetCreature = false;
+                    scan.PendingAllyCreature = false;
+                    i += 2; break;
+                case 0x72:                  // ldstr: a summon's literal slot name
+                {
+                    int tok = BitConverter.ToInt32(il, i + 1);
+                    try { scan.LastString = module.ResolveString(tok); }
+                    catch { }
+                    i += 5; break;
+                }
+                case 0x7D:                  // stfld: the async rewrite's hoisted local
+                    if (scan.PendingTargetCreature)
+                        scan.TargetCreatureFields.Add(BitConverter.ToInt32(il, i + 1));
+                    if (scan.PendingAllyCreature)
+                        scan.AllyCreatureFields.Add(BitConverter.ToInt32(il, i + 1));
+                    scan.PendingTargetCreature = false;
+                    scan.PendingAllyCreature = false;
+                    i += 5; break;
                 case >= 0x16 and <= 0x1E:   // ldc.i4.0 .. ldc.i4.8
                     scan.PushInt(op - 0x16); i += 1; break;
                 case 0x1F: scan.PushInt((int)(sbyte)il[i + 1]); i += 2; break;      // ldc.i4.s
@@ -403,6 +728,12 @@ public static partial class McpMod
                     // recorded as an unknown one.
                     if (IsIntField(module, tok))
                         scan.PushInt(ReadIntField(module, tok, monster));
+                    else if (scan.TargetCreatureFields.Contains(tok))
+                        scan.LastCreatureIsTarget = true;
+                    else if (scan.AllyCreatureFields.Contains(tok))
+                        scan.LastCreatureIsAlly = true;
+                    else if (IsHoistedTargetsField(module, tok))
+                        scan.LastCollectionIsTargets = true;
                     i += 5; break;
                 }
                 case 0x73:                   // newobj: `2m` is Decimal..ctor(int32)
@@ -609,6 +940,21 @@ public static partial class McpMod
             // apply targets, since that overload's parameter is always Creature.
             if (getter.Name == "get_Creature")
                 scan.LastCreatureIsSelf = true;
+            // A creature pulled out of an enumerator opened over the move's own
+            // `targets` is a player-side target. It is flagged for this argument
+            // run (a body that uses it straight away) and marked pending for the
+            // store that follows (a body that keeps it in a local or a hoisted
+            // field first), because both lowerings occur.
+            if (getter.Name == "get_Current" && scan.EnumeratingTargets)
+            {
+                scan.LastCreatureIsTarget = true;
+                scan.PendingTargetCreature = true;
+            }
+            if (getter.Name == "get_Current" && scan.EnumeratingOwnSide)
+            {
+                scan.LastCreatureIsAlly = true;
+                scan.PendingAllyCreature = true;
+            }
             // An indexer takes arguments off the stack this scan does not model,
             // so it resolves to nothing and merely ends the run of constants.
             object? value = getter.GetParameters().Length == 0
@@ -639,6 +985,15 @@ public static partial class McpMod
                 scan.PendingPower = argument;
         }
 
+        // Sampled before the run is closed, for the calls that carry no amount
+        // to sample at: `PowerCmd.Remove<T>(creature)` has no Decimal in it, and
+        // `GetEnumerator` is the call that decides what the loop after it walks.
+        bool creatureWasSelf = scan.LastCreatureIsSelf;
+        bool creatureWasTarget = scan.LastCreatureIsTarget;
+        bool creatureWasAlly = scan.LastCreatureIsAlly;
+        bool collectionWasTargets = scan.LastCollectionIsTargets;
+        bool collectionWasOwnSide = scan.LastCollectionIsOwnSide || scan.PendingOwnSideCollection;
+        string? literalSlot = scan.LastString;
         scan.EndArgumentRun();
 
         string owner = mm.DeclaringType?.Name ?? "";
@@ -658,8 +1013,9 @@ public static partial class McpMod
                 // else — a loop variable over the move's targets, a teammate
                 // picked out of a filtered list — is an honest unknown.
                 string? side = collection
-                    ? (scan.TargetWasOwnSide ? null : "player")
-                    : (scan.TargetWasSelf ? "self" : null);
+                    ? (scan.TargetWasOwnSide ? "allies" : "player")
+                    : (scan.TargetWasSelf ? "self" : scan.TargetWasTarget ? "player"
+                        : scan.TargetWasAlly ? "ally" : null);
                 scan.Applies.Add(new Dictionary<string, object?>
                 {
                     ["power"] = powerName,
@@ -691,6 +1047,44 @@ public static partial class McpMod
                     ["amount"] = scan.TakeAmount(),
                 });
             }
+        }
+        else if (owner == "PowerCmd" && mm.Name == "Remove" && mm is MethodInfo removeMi
+                 && removeMi.IsGenericMethod)
+        {
+            // `Remove<T>(creature)` names the power in its generic argument, and
+            // the creature expression says whose it is — the same rule the
+            // applies use, read from the flag sampled above because a Remove
+            // carries no amount to sample at. The non-generic `Remove(power)`
+            // overload takes a runtime instance and stays unreadable, which is
+            // silence rather than a guess.
+            scan.Removes.Add(new Dictionary<string, object?>
+            {
+                ["power"] = removeMi.GetGenericArguments().FirstOrDefault()?.Name,
+                ["target"] = creatureWasSelf ? "self" : creatureWasTarget ? "player"
+                    : creatureWasAlly ? "ally" : "unknown",
+            });
+        }
+        else if (owner == "CreatureCmd" && mm.Name == "Add" && mm is MethodInfo addMi
+                 && addMi.IsGenericMethod)
+        {
+            // A literal slot is the whole answer (the game does no occupancy
+            // check on one); a null slot means the caller computed it, and the
+            // consumer replays `GetNextSlot` for itself.
+            scan.Summons.Add(new Dictionary<string, object?>
+            {
+                ["monster"] = addMi.GetGenericArguments().FirstOrDefault()?.Name,
+                ["slot"] = literalSlot,
+            });
+        }
+        else if (mm.Name == "GetEnumerator")
+        {
+            // What the loop about to run walks. Set after `EndArgumentRun` so it
+            // survives the whole loop body, and overwritten by the next
+            // `GetEnumerator` so a second loop over something else cannot
+            // inherit it.
+            scan.EnumeratingTargets = collectionWasTargets;
+            scan.EnumeratingOwnSide = collectionWasOwnSide;
+            scan.PendingOwnSideCollection = false;
         }
         else if (owner == "CreatureCmd" && mm.Name == "GainBlock")
         {
@@ -724,6 +1118,7 @@ public static partial class McpMod
             // the apply that consumes the collection, and cleared by that
             // apply's own run — the same lifetime `LastCreatureIsSelf` has.
             scan.LastCollectionIsOwnSide = true;
+            scan.PendingOwnSideCollection = true;
         }
         else if (owner == "CreatureCmd" && mm.Name.Contains("Heal"))
         {
@@ -797,6 +1192,27 @@ public static partial class McpMod
     /// resolution the stat getters already get; a field on any other object is
     /// unknown, which poisons the amount rather than inventing one.
     /// </remarks>
+    /// <summary>
+    /// Whether a field token names the async rewrite's copy of the move's own
+    /// <c>targets</c> parameter.
+    /// </summary>
+    /// <remarks>
+    /// Roslyn hoists a parameter into a field of the same name, so this is the
+    /// state machine's handle on the list a `foreach` in the move body walks. A
+    /// hoisted LOCAL is named `&lt;name&gt;5__N` and can never collide with it.
+    /// </remarks>
+    private static bool IsHoistedTargetsField(Module module, int token)
+    {
+        try
+        {
+            return module.ResolveField(token)?.Name == "targets";
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>Whether a field token names an <c>int</c> field.</summary>
     private static bool IsIntField(Module module, int token)
     {

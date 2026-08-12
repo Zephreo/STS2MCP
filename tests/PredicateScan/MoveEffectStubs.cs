@@ -22,6 +22,13 @@ public class FrailPower : PowerModel { }
 public class IntangiblePower : PowerModel { }
 public class SandpitPower : PowerModel { }
 public class DampenPower : PowerModel { }
+public class SoarPower : PowerModel { }
+
+/// <summary>A power a move reads the AMOUNT of, to branch on it.</summary>
+public class PersonalHivePower : PowerModel
+{
+    public int Amount => 1;
+}
 public class Dazed : CardModel { }
 public class Slimed : CardModel { }
 public class Beckon : CardModel { }
@@ -41,6 +48,10 @@ public static class PowerCmd
 
     public static Task Apply(PlayerChoiceContext ctx, PowerModel power, Creature target, decimal amount,
         Creature? applier, CardModel? source, bool silent = false) => Task.CompletedTask;
+
+    public static Task Remove<T>(Creature creature) where T : PowerModel => Task.CompletedTask;
+
+    public static Task Remove(PowerModel? power) => Task.CompletedTask;
 }
 
 /// <summary>A monster class a `Where` predicate can type-test, as `Guardbot` does.</summary>
@@ -57,7 +68,16 @@ public static class CreatureCmd
     public static Task Heal(Creature creature, decimal amount, bool playAnim = true) => Task.CompletedTask;
 
     public static Task TriggerAnim(Creature creature, string anim, float time) => Task.CompletedTask;
+
+    public static Task<Creature> Add<T>(CombatStateStub combatState, string? slotName = null)
+        where T : MegaCrit.Sts2.Core.Models.MonsterModel => Task.FromResult(new Creature());
+
+    public static Task<Creature> Add(MegaCrit.Sts2.Core.Models.MonsterModel monster, CombatStateStub combatState,
+        int side = 0, string? slotName = null) => Task.FromResult(new Creature());
 }
+
+/// <summary>A creature a move can summon, as `LivingFog.BloatMove` does.</summary>
+public class GasBomb : MegaCrit.Sts2.Core.Models.MonsterModel { }
 
 public static class CardPileCmd
 {

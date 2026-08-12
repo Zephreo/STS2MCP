@@ -295,4 +295,13 @@ public static partial class McpMod
         var scan = ScanPredicate(weightLambda.Method);
         return scan.Members.Count > 0 || scan.HasBranch;
     }
+
+    /// <summary>Names the supported live rule behind a random weight.</summary>
+    private static string? DynamicWeightRule(Delegate? weightLambda)
+    {
+        if (weightLambda == null)
+            return null;
+        var scan = ScanPredicate(weightLambda.Method);
+        return ReadsAny(scan, ".CanSummon") ? "two_tailed_rat_can_summon" : null;
+    }
 }

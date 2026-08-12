@@ -20,6 +20,7 @@ public class Creature
     public int MaxHp => 379;
     public string SlotName => "first";
     public bool HasPower<T>() => false;
+    public T GetPower<T>() where T : new() => new T();
 
     /// <summary>What `TheForgotten.DreadDamage` reads to scale its attack.</summary>
     public int GetPowerAmount<T>() => 0;

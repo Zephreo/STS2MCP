@@ -28,6 +28,15 @@ The endpoints are mutually exclusive: calling singleplayer during a multiplayer 
 
 ### Common Top-Level Fields
 
+Every response (including `menu`) carries the game's own release version:
+
+```jsonc
+{
+  "game_version": "0.108.2" // From the game's release_info.json; omitted when the
+                            // build ships without one
+}
+```
+
 Every response (except `menu`) includes these top-level fields alongside the state-specific data:
 
 ```jsonc

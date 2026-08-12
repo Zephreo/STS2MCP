@@ -64,6 +64,20 @@ namespace STS2_MCP
             Check($"{label} position", insert["position"], position);
         }
 
+        private static void CheckRemove(string label, string methodName, int index,
+            string power, string target)
+        {
+            var scan = ScanBody(methodName);
+            if (scan.Removes.Count <= index)
+            {
+                Check($"{label} remove[{index}]", $"missing (found {scan.Removes.Count})", "present");
+                return;
+            }
+            var removal = scan.Removes[index];
+            Check($"{label} power", removal["power"], power);
+            Check($"{label} target", removal["target"], target);
+        }
+
         private static void CheckAllyBlock(string label, string methodName, int index,
             object? amount, object? monster)
         {
@@ -158,19 +172,80 @@ namespace STS2_MCP
                 "DampenPower", "player", 1);
 
             // The generic overloads read the same expression rather than
-            // trusting the parameter type. A single Creature that is not the
-            // monster's own, and a collection that is its own side, are both
-            // honest unknowns the consumer drops and flags.
-            CheckApply("generic loop target", nameof(MoveBodies.GenericPowerOnLoopTarget), 0,
-                "WeakPower", "unknown", 2);
+            // trusting the parameter type. A collection returned by
+            // GetTeammatesOf is explicitly the mover's own side.
             CheckApply("generic own side", nameof(MoveBodies.GenericPowerOnOwnSide), 0,
-                "StrengthPower", "unknown", 3);
+                "StrengthPower", "allies", 3);
             CheckApply("generic opponents", nameof(MoveBodies.GenericPowerOnOpponents), 0,
                 "FrailPower", "player", 1);
             CheckApply("own side then self #1", nameof(MoveBodies.OwnSideThenSelf), 0,
-                "StrengthPower", "unknown", 3);
+                "StrengthPower", "allies", 3);
             CheckApply("own side then self #2", nameof(MoveBodies.OwnSideThenSelf), 1,
                 "IntangiblePower", "self", 2);
+
+            // A creature taken out of the move's own `targets` is the player
+            // side, whichever apply overload consumes it. Without this the
+            // Spectral Knight's Hex read as an unplaceable unknown and never
+            // reached the player at all.
+            CheckApply("targets loop is the player", nameof(MoveBodies.GenericPowerOnLoopTarget), 0,
+                "WeakPower", "player", 2);
+            // ...but a loop over anything else still says nothing. Reading every
+            // loop variable as a player would hand the Guardbot's own side the
+            // debuffs meant for us.
+            CheckApply("filtered own-side loop", nameof(MoveBodies.GenericPowerOnFilteredOwnSide), 0,
+                "StrengthPower", "unknown", 2);
+            CheckApply("second loop does not inherit the first",
+                nameof(MoveBodies.OwnSideLoopThenTargetLoop), 0, "WeakPower", "player", 2);
+            CheckAllyBlock("own-side loop before a target loop",
+                nameof(MoveBodies.OwnSideLoopThenTargetLoop), 0, 15, "Fabricator");
+
+            // Powers a move takes back. The Owl Magistrate grants itself Soar and
+            // removes it three turns later, so exporting only the grant left it
+            // permanently halving the player's own attacks.
+            CheckRemove("verdict removal", nameof(MoveBodies.AttackDebuffThenRemoveOwnBuff), 0,
+                "SoarPower", "self");
+            CheckApply("verdict debuff still lands", nameof(MoveBodies.AttackDebuffThenRemoveOwnBuff), 0,
+                "FrailPower", "player", 4);
+            CheckRemove("removal from each target", nameof(MoveBodies.RemoveFromEachTarget), 0,
+                "SoarPower", "player");
+            CheckRemove("removal from a filtered ally", nameof(MoveBodies.RemoveFromAFilteredAlly), 0,
+                "SoarPower", "unknown");
+            CheckRemove("two removals #1", nameof(MoveBodies.RemoveTwoOwnPowers), 0, "SoarPower", "self");
+            CheckRemove("two removals #2", nameof(MoveBodies.RemoveTwoOwnPowers), 1, "DampenPower", "self");
+            Check("a removal is not an apply",
+                ScanBody(nameof(MoveBodies.RemoveTwoOwnPowers)).Applies.Count, 0);
+
+            // A body that chooses between effect sets exports their SUM, which
+            // is a known defect rather than a modeled one: the Entomancer's Spit
+            // gives +1 Personal Hive and +1 Strength OR +2 Strength, and the
+            // linear scan records all three applies. Pinned here so the ledger's
+            // claim about it is a fact the suite checks rather than a note that
+            // can go stale, and so the exact fix has a failing expectation to
+            // turn green.
+            //
+            // Detecting the branch was tried and rejected: an async body's own
+            // state dispatch and `foreach` headers use the same comparison
+            // branches a source-level `if` does, so a peephole rule flagged 13
+            // of the 14 non-branching bodies in this file while missing this
+            // one. Distinguishing them needs real control-flow reconstruction.
+            var branched = ScanBody(nameof(MoveBodies.BranchedApplies));
+            Check("branchy body exports both arms", branched.Applies.Count, 3);
+
+            // Summons. The generic overload names the class; the non-generic one
+            // takes a model picked at runtime and must stay silent rather than
+            // export a creature it guessed at.
+            var summoning = ScanBody(nameof(MoveBodies.SummonThenAttack));
+            Check("summon class", summoning.Summons.Count > 0 ? summoning.Summons[0]["monster"] : null, "GasBomb");
+            Check("one call is one summon", summoning.Summons.Count, 1);
+            Check("runtime-picked summon is unreadable",
+                ScanBody(nameof(MoveBodies.SummonAModelChosenAtRuntime)).Summons.Count, 0);
+            // A computed slot exports none, so the consumer replays GetNextSlot.
+            Check("computed slot is not a literal",
+                summoning.Summons.Count > 0 ? summoning.Summons[0]["slot"] : "missing", "");
+            // A literal one is read outright, and the animation name that
+            // precedes it does not leak into the call after it.
+            var literalSlot = ScanBody(nameof(MoveBodies.SummonAtALiteralSlot));
+            Check("literal slot", literalSlot.Summons.Count > 0 ? literalSlot.Summons[0]["slot"] : null, "illusion");
         }
     }
 }

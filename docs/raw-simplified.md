@@ -24,6 +24,7 @@ Singleplayer and multiplayer endpoints are mutually exclusive (HTTP 409 if misma
 ## GET — State Types
 
 Every JSON response includes:
+- `game_version` — the game's own release version (e.g. `"0.108.2"`), from its `release_info.json`; omitted when the build has none
 - `state_type` — which screen the game is on (see below)
 - `run` — `{ act, floor, ascension }` (absent for `menu`)
 - `player` — full player state: character, HP, gold, relics, potions, `max_potion_slots` (belt capacity, grows with relics), and during combat: energy, hand, piles, orbs (absent for `menu`)

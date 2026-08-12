@@ -398,6 +398,7 @@ public static partial class McpMod
                 ["card_name"] = SafeGetText(() => cardPlay.Card.Title),
                 ["play_index"] = cardPlay.PlayIndex,
                 ["play_count"] = cardPlay.PlayCount,
+                ["is_auto_play"] = cardPlay.IsAutoPlay,
                 ["target"] = target
             });
         }

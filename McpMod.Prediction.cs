@@ -105,6 +105,14 @@ public static partial class McpMod
                 ["random_weights_are_snapshots"] = hasWeightSnapshots,
                 ["states"] = states,
             };
+            if (monster.GetType().Name == "TwoTailedRat")
+            {
+                result["dynamic_weight_state"] = new Dictionary<string, object?>
+                {
+                    ["turns_until_summonable"] = ReadMonsterInt(monster, "TurnsUntilSummonable"),
+                    ["call_for_backup_count"] = ReadMonsterInt(monster, "CallForBackupCount"),
+                };
+            }
             if (rngCoords.TryGetValue("seed", out var seed))
                 result["rng_seed"] = seed;
             if (rngCoords.TryGetValue("state", out var rngState))
@@ -143,9 +151,10 @@ public static partial class McpMod
             float weight;
             try { weight = branch.GetWeight(); }
             catch { weight = 0f; }
-            // A weight that reads live state cannot be represented by the
-            // single sample taken here; say so instead of freezing it silently.
-            hasSnapshots |= IsDynamicWeight(branch.weightLambda);
+            string? dynamicRule = DynamicWeightRule(branch.weightLambda);
+            // A supported live rule is re-evaluated by the consumer. Any other
+            // dynamic lambda remains an explicit snapshot.
+            hasSnapshots |= IsDynamicWeight(branch.weightLambda) && dynamicRule == null;
             branches.Add(new Dictionary<string, object?>
             {
                 ["state"] = branch.stateId,
@@ -153,6 +162,11 @@ public static partial class McpMod
                 ["repeat"] = branch.repeatType.ToString(),
                 ["max_repeats"] = branch.maxTimes,
                 ["cooldown"] = branch.cooldown,
+                ["weight_rule"] = dynamicRule == null ? null : new Dictionary<string, object?>
+                {
+                    ["kind"] = dynamicRule,
+                    ["summon_branch"] = branch.stateId == "CALL_FOR_BACKUP_MOVE",
+                },
             });
         }
         return new Dictionary<string, object?>

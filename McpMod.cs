@@ -19,7 +19,7 @@ namespace STS2_MCP;
 [ModInitializer("Initialize")]
 public static partial class McpMod
 {
-    public const string Version = "0.5.1";
+    public const string Version = "0.5.2";
     public const int DefaultPort = 15526;
     private const string ConfigFileName = "STS2_MCP.conf";
 
@@ -33,6 +33,28 @@ public static partial class McpMod
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
+
+    // The game's own release version ("0.108.2"), from the release_info.json shipped next to the
+    // executable. Fixed for the process, so it is read once — and only from the main thread (the
+    // manager is a lazily-constructed singleton that touches Godot file IO). Null when the build
+    // ships without a release_info.json, in which case the key is omitted from the state.
+    private static string? _gameVersion;
+    private static bool _gameVersionRead;
+
+    internal static string? GameVersion()
+    {
+        if (_gameVersionRead) return _gameVersion;
+        _gameVersionRead = true;
+        try
+        {
+            _gameVersion = MegaCrit.Sts2.Core.Debug.ReleaseInfoManager.Instance.ReleaseInfo?.Version;
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[STS2 MCP] Failed to read game version: {ex.Message}");
+        }
+        return _gameVersion;
+    }
 
     private static string? ConfigFilePath()
     {
@@ -346,7 +368,12 @@ public static partial class McpMod
 
         try
         {
-            var stateTask = RunOnMainThread(() => BuildMultiplayerGameState());
+            var stateTask = RunOnMainThread(() =>
+            {
+                var s = BuildMultiplayerGameState();
+                s["game_version"] = GameVersion();
+                return s;
+            });
             var state = stateTask.GetAwaiter().GetResult();
 
             if (format == "markdown")
@@ -440,7 +467,12 @@ public static partial class McpMod
 
         try
         {
-            var stateTask = RunOnMainThread(() => BuildGameState());
+            var stateTask = RunOnMainThread(() =>
+            {
+                var s = BuildGameState();
+                s["game_version"] = GameVersion();
+                return s;
+            });
             var state = stateTask.GetAwaiter().GetResult();
 
             if (format == "markdown")

@@ -26,6 +26,7 @@ public static partial class McpMod
         string? OriginId,
         string? OriginType,
         string? OriginKind,
+        bool OriginUpgraded,
         string Effect);
 
     private static ActiveCardSelection? _activeCardSelection;
@@ -53,6 +54,7 @@ public static partial class McpMod
             state["origin_type"] = selection.OriginType;
         if (selection.OriginKind != null)
             state["origin_kind"] = selection.OriginKind;
+        state["origin_upgraded"] = selection.OriginUpgraded;
     }
 
     private static string SelectionSurface(string methodName)
@@ -106,7 +108,7 @@ public static partial class McpMod
         return originType switch
         {
             "Headbutt" or "CosmicIndifference" => "discard_to_draw_top",
-            "Cleanse" or "Brand" or "BurningPact" or "Purity" or "Scavenge" or "TrueGrit" or "TyrannyPower"
+            "Ashwater" or "Cleanse" or "Brand" or "BurningPact" or "Purity" or "Scavenge" or "TrueGrit" or "TyrannyPower"
                 => "exhaust",
             "Charge" => "transform_minion_dive_bomb",
             "Seance" => "transform_soul",
@@ -115,9 +117,21 @@ public static partial class McpMod
                 or "StratagemPower" or "NeowsFury" or "SeekerStrike" or "SecretWeapon" or "SecretTechnique" or "Wish"
                 => "move_to_hand",
             "Glimmer" or "PhotonCut" or "ThinkingAhead" => "hand_to_draw_top",
-            "Begone" or "Transfigure" or "EntropyPower" => "transform",
+            // Only Entropy rolls a replacement. Begone swaps in a fixed Minion
+            // Strike and Transfigure re-costs the card in place, so neither is a
+            // transform the bot can answer with a transform's logic.
+            "EntropyPower" => "transform",
+            "Begone" => "hand_transform_minion_strike",
+            "Guards" => "hand_transform_minion_sacrifice",
+            "Transfigure" => "hand_transfigure",
+            "HandTrick" => "hand_grant_sly",
+            "SculptingStrike" => "hand_grant_ethereal",
+            "HeirloomHammer" => "hand_copy_to_hand",
+            "DecisionsDecisions" => "hand_autoplay",
+            "ChoicesParadox" => "generated_to_hand",
             "Nightmare" or "DualWield" => "copy",
             "Snap" or "WellLaidPlansPower" => "retain",
+            "TouchOfInsanity" => "free_this_combat",
             "Acrobatics" or "DaggerThrow" or "HiddenDaggers" or "Prepared" or "Survivor"
                 or "GamblersBrew" or "GamblingChip" or "ToolsOfTheTradePower"
                 => "discard",
@@ -159,6 +173,9 @@ public static partial class McpMod
                 originId,
                 originType,
                 SelectionOriginKind(callerType),
+                // Begone+ and GUARDS!!!+ transform into the upgraded card, and a
+                // cold-seeded search cannot tell which from the prompt alone.
+                source is CardModel sourceCard && sourceCard.IsUpgraded,
                 SelectionEffect(methodName, originType));
             Volatile.Write(ref _activeCardSelection, context);
         }

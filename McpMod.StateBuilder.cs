@@ -56,6 +56,7 @@ using MegaCrit.Sts2.Core.Platform.Steam;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.Screens.Timeline;
+using MegaCrit.Sts2.Core.Timeline.Epochs;
 using MegaCrit.Sts2.Core.Nodes.Screens.Settings;
 using MegaCrit.Sts2.Core.Nodes.Screens.ProfileScreen;
 using Godot;
@@ -1441,6 +1442,20 @@ public static partial class McpMod
         }
         battle["enemies"] = enemies;
 
+        // The encounter's slot list, in declaration order. `EncounterModel
+        // .GetNextSlot` is `Slots.FirstOrDefault(s => Enemies.All(c => c.SlotName
+        // != s), "")`, so a consumer holding this plus each enemy's own slot can
+        // reproduce where a summoned creature lands — and, more importantly,
+        // when the board is full and a move that summons produces nothing at
+        // all. Without it a simulated Living Fog would keep bloating forever.
+        try
+        {
+            var slots = combatState.Encounter?.Slots;
+            if (slots != null && slots.Count > 0)
+                battle["encounter_slots"] = new List<string>(slots);
+        }
+        catch { }
+
         // Run RNG stream coordinates (seed/counter per stream) so the planner
         // can resolve shuffle/target randomness exactly. See McpMod.RngStreams.cs.
         var rngStreams = BuildRngStreams(runState);
@@ -1741,10 +1756,51 @@ public static partial class McpMod
                 ["counter"] = relic is GoldenCompass compass
                     ? compass.GoldenPathAct
                     : (relic.ShowCounter ? relic.DisplayAmount : (int?)null),
+                ["status"] = relic.Status.ToString(),
+                ["is_used_up"] = relic.IsUsedUp,
+                ["is_wax"] = relic.IsWax,
+                ["is_melted"] = relic.IsMelted,
+                ["vars"] = relic.DynamicVars.ToDictionary(
+                    pair => pair.Key,
+                    pair => (object?)new Dictionary<string, object?>
+                    {
+                        ["base"] = pair.Value.BaseValue,
+                        ["enchanted"] = pair.Value.EnchantedValue,
+                        ["preview"] = pair.Value.PreviewValue,
+                        ["rendered"] = pair.Value.ToString()
+                    }),
+                ["runtime"] = BuildRelicRuntimeState(relic),
                 ["keywords"] = BuildHoverTips(relic.HoverTipsExcludingRelic)
             });
         }
         return relics;
+    }
+
+    private static Dictionary<string, object?> BuildRelicRuntimeState(RelicModel relic)
+    {
+        var runtime = new Dictionary<string, object?>();
+        if (relic is MegaCrit.Sts2.Core.Models.Relics.FurCoat furCoat)
+        {
+            var currentMapPoint = furCoat.Owner.RunState.CurrentMapPoint;
+            runtime["active_combat"] = currentMapPoint != null
+                && furCoat.GetMarkedCoords()?.Contains(currentMapPoint.coord) == true;
+        }
+        var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
+
+        // Concrete and intermediate relic classes carry saved counters and
+        // combat-only latches that are not represented by DisplayAmount. The
+        // planner re-plans mid-combat, so it needs those fields to avoid
+        // replaying one-shot hooks or restarting persistent cycles.
+        for (Type? type = relic.GetType(); type != null && type != typeof(RelicModel); type = type.BaseType)
+        {
+            foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly))
+            {
+                if (field.IsStatic || field.IsLiteral)
+                    continue;
+                runtime[field.Name] = SerializePowerRuntimeValue(field.GetValue(relic), seen, 0);
+            }
+        }
+        return runtime;
     }
 
     // Writes "potions"/"max_potion_slots" into `state`. Shared by the local
@@ -1763,6 +1819,11 @@ public static partial class McpMod
                     ["name"] = SafeGetText(() => potion.Title),
                     ["description"] = SafeGetText(() => potion.DynamicDescription),
                     ["slot"] = slotIndex,
+                    ["rarity"] = potion.Rarity.ToString(),
+                    ["pool"] = SafeGet(() => potion.Pool.Id.Entry),
+                    ["epoch"] = GetPotionEpoch(potion),
+                    ["usage"] = potion.Usage.ToString(),
+                    ["can_be_generated_in_combat"] = potion.CanBeGeneratedInCombat,
                     ["can_use_in_combat"] = potion.Usage == PotionUsage.CombatOnly || potion.Usage == PotionUsage.AnyTime,
                     ["target_type"] = potion.TargetType.ToString(),
                     ["keywords"] = BuildHoverTips(potion.ExtraHoverTips)
@@ -1772,6 +1833,19 @@ public static partial class McpMod
         }
         state["potions"] = potions;
         state["max_potion_slots"] = player.MaxPotionCount;
+    }
+
+    private static string? GetPotionEpoch(PotionModel potion)
+    {
+        var id = potion.Id;
+        if (Potion1Epoch.Potions.Any(candidate => candidate.Id == id)) return "POTION1_EPOCH";
+        if (Potion2Epoch.Potions.Any(candidate => candidate.Id == id)) return "POTION2_EPOCH";
+        if (Ironclad4Epoch.Potions.Any(candidate => candidate.Id == id)) return "IRONCLAD4_EPOCH";
+        if (Silent4Epoch.Potions.Any(candidate => candidate.Id == id)) return "SILENT4_EPOCH";
+        if (Regent4Epoch.Potions.Any(candidate => candidate.Id == id)) return "REGENT4_EPOCH";
+        if (Necrobinder4Epoch.Potions.Any(candidate => candidate.Id == id)) return "NECROBINDER4_EPOCH";
+        if (Defect4Epoch.Potions.Any(candidate => candidate.Id == id)) return "DEFECT4_EPOCH";
+        return null;
     }
 
     private static string GetCostDisplay(CardModel card)
@@ -1837,7 +1911,11 @@ public static partial class McpMod
             ["star_cost"] = GetStarCostDisplay(card),
             ["description"] = SafeGetCardDescription(card, pile),
             ["rarity"] = card.Rarity.ToString(),
+            ["enchantment"] = card.Enchantment?.GetType().Name,
+            ["has_deck_version"] = card.DeckVersion != null,
             ["is_upgraded"] = card.IsUpgraded,
+            ["base_replay_count"] = card.BaseReplayCount,
+            ["tags"] = card.Tags.Select(tag => tag.ToString()).ToArray(),
             ["keywords"] = BuildHoverTips(card.HoverTips)
         };
         // The multiplayer synchronizer already assigns every mutable combat
@@ -1925,6 +2003,9 @@ public static partial class McpMod
         {
             ["entity_id"] = entityId,
             ["combat_id"] = creature.CombatId,
+            // Which encounter slot this creature occupies. Fixed for its whole
+            // life, and what `GetNextSlot` tests against when a move summons.
+            ["slot_name"] = creature.SlotName,
             ["name"] = SafeGetText(() => monster?.Title),
             ["hp"] = creature.CurrentHp,
             ["max_hp"] = creature.MaxHp,
