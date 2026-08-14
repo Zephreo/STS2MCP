@@ -379,7 +379,7 @@ The same screen drives SP, MP host, and MP client. In MP, an additional `lobby` 
   "lobby": {                       // present only in MP
     "type": "host",                // "host" | "client" | "singleplayer"
     "game_mode": "standard",       // "standard" | "daily" | "custom"
-    "max_players": 4,
+    "max_players": 4,              // private on beta v0.111+, still read; absent only if renamed
     "ascension": 0,
     "max_ascension": 5,            // min across all lobby members' MaxMultiplayerAscension
     "all_ready": false,

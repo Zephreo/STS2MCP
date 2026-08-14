@@ -97,7 +97,7 @@ public static partial class McpMod
 
             try
             {
-                var path = ProgressSaveManager.GetProgressPathForProfile(i);
+                var path = GetProfileProgressPath(i);
                 var resolvedPath = ResolveProfileProgressPath(i);
                 profileData["has_data"] = resolvedPath != null && File.Exists(resolvedPath);
                 profileData["path"] = path;

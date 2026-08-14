@@ -1077,6 +1077,16 @@ public static partial class McpMod
 
     private static Dictionary<string, object?> BuildStartRunLobbyState(StartRunLobby lobby)
     {
+        // v0.111 renamed the roster's element type (LobbyPlayer ->
+        // StartRunLobbyPlayer) and dropped the public MaxPlayers. Naming either
+        // one directly would bake a typeref/memberref this DLL cannot resolve on
+        // the main branch — and the rename is worse than a failed call, because
+        // the lambdas over the roster put the element type on a compiler-
+        // generated closure, which fails the whole assembly's type enumeration
+        // and takes the entire mod down at load. Both are read reflectively; the
+        // roster's own field names survived the rename.
+        var roster = GetStartRunLobbyPlayers(lobby);
+
         var lobbyState = new Dictionary<string, object?>
         {
             ["type"] = lobby.NetService.Type switch
@@ -1087,45 +1097,44 @@ public static partial class McpMod
                 _ => lobby.NetService.Type.ToString().ToLowerInvariant()
             },
             ["game_mode"] = lobby.GameMode.ToString().ToLowerInvariant(),
-            ["max_players"] = lobby.MaxPlayers,
+            ["max_players"] = GetStartRunLobbyMaxPlayers(lobby),
             ["ascension"] = lobby.Ascension,
             ["max_ascension"] = lobby.MaxAscension,
-            ["all_ready"] = lobby.Players.Count > 0 && lobby.Players.All(p => p.isReady),
+            ["all_ready"] = roster.Count > 0 && roster.All(p => p.IsReady),
             ["is_about_to_begin"] = SafeIsAboutToBeginGame(lobby)
         };
 
+        var local = GetStartRunLobbyLocalPlayer(lobby, roster);
+
         // is_local_ready === local player has hit Embark in MP and is now waiting.
         // Mirrors NCharacterSelectScreen._readyAndWaitingContainer.Visible.
-        try
+        if (local != null)
         {
-            var local = lobby.LocalPlayer;
-            lobbyState["is_local_ready"] = local.isReady;
-            lobbyState["local_player_id"] = local.id.ToString();
+            lobbyState["is_local_ready"] = local.IsReady;
+            lobbyState["local_player_id"] = local.Id.ToString();
         }
-        catch { }
 
         var players = new List<Dictionary<string, object?>>();
-        ulong localId;
-        try { localId = lobby.LocalPlayer.id; } catch { localId = 0; }
+        ulong localId = local?.Id ?? 0;
         ulong hostId = lobby.NetService.Type == NetGameType.Host ? localId : 0;
 
-        foreach (var p in lobby.Players)
+        foreach (var p in roster)
         {
             var entry = new Dictionary<string, object?>
             {
-                ["id"] = p.id.ToString(),
-                ["slot_id"] = p.slotId,
-                ["is_local"] = p.id == localId,
+                ["id"] = p.Id.ToString(),
+                ["slot_id"] = p.SlotId,
+                ["is_local"] = p.Id == localId,
                 // We can only positively identify the host as "us" when we ARE the host;
                 // a client doesn't know which remote id is the host without inspecting
                 // the net service. Keep it simple and only flag is_host=true for self
                 // when hosting — clients can infer host-ness by player_id when needed.
-                ["is_host"] = p.id == hostId && hostId != 0,
-                ["character"] = SafeGetText(() => p.character?.Title)
-                                ?? p.character?.Id.Entry,
-                ["character_id"] = p.character?.Id.Entry,
-                ["is_ready"] = p.isReady,
-                ["platform_name"] = SafeGetPlayerName(lobby.NetService.Platform, p.id)
+                ["is_host"] = p.Id == hostId && hostId != 0,
+                ["character"] = SafeGetText(() => p.Character?.Title)
+                                ?? p.Character?.Id.Entry,
+                ["character_id"] = p.Character?.Id.Entry,
+                ["is_ready"] = p.IsReady,
+                ["platform_name"] = SafeGetPlayerName(lobby.NetService.Platform, p.Id)
             };
             players.Add(entry);
         }
@@ -1136,6 +1145,95 @@ public static partial class McpMod
             lobbyState["seed"] = lobby.Seed;
 
         return lobbyState;
+    }
+
+    /// <summary>
+    /// One character-select lobby seat, read out of whichever struct this game
+    /// build uses for the roster.
+    /// </summary>
+    private sealed class StartRunLobbySeat
+    {
+        internal ulong Id;
+        internal int SlotId;
+        internal bool IsReady;
+        internal CharacterModel? Character;
+    }
+
+    /// <summary>
+    /// The character-select lobby roster, in slot order as the game holds it.
+    /// </summary>
+    private static List<StartRunLobbySeat> GetStartRunLobbyPlayers(StartRunLobby lobby)
+    {
+        var seats = new List<StartRunLobbySeat>();
+        if (SafeGet(() => GetInstanceMemberValue(lobby, "Players")) is not IEnumerable players)
+            return seats;
+
+        foreach (var player in players)
+        {
+            if (player == null)
+                continue;
+            var seat = ReadStartRunLobbySeat(player);
+            if (seat != null)
+                seats.Add(seat);
+        }
+        return seats;
+    }
+
+    /// <summary>
+    /// The local player's seat. `LocalPlayer` returns the roster struct itself,
+    /// so it is read the same reflective way; a build that ever stops exposing
+    /// it falls back to matching the roster against our own net id.
+    /// </summary>
+    private static StartRunLobbySeat? GetStartRunLobbyLocalPlayer(StartRunLobby lobby, List<StartRunLobbySeat> roster)
+    {
+        var local = SafeGet(() => GetInstanceMemberValue(lobby, "LocalPlayer"));
+        if (local != null)
+        {
+            var seat = ReadStartRunLobbySeat(local);
+            // A struct roster returns default(T) rather than null for a missing
+            // seat, which reads as id 0 — not a real player.
+            if (seat != null && seat.Id != 0)
+                return seat;
+        }
+
+        ulong netId;
+        try { netId = lobby.NetService.NetId; }
+        catch { return null; }
+        return roster.Find(p => p.Id == netId);
+    }
+
+    private static StartRunLobbySeat? ReadStartRunLobbySeat(object player)
+    {
+        var id = SafeGet(() => GetInstanceMemberValue(player, "id"));
+        if (id == null)
+            return null;
+
+        var seat = new StartRunLobbySeat
+        {
+            Character = SafeGet(() => GetInstanceMemberValue(player, "character")) as CharacterModel,
+            IsReady = SafeGet(() => GetInstanceMemberValue(player, "isReady")) as bool? ?? false,
+            SlotId = SafeGet(() => GetInstanceMemberValue(player, "slotId")) as int? ?? -1,
+        };
+        try { seat.Id = Convert.ToUInt64(id); }
+        catch { return null; }
+        return seat;
+    }
+
+    /// <summary>
+    /// The lobby's player cap. v0.111 demoted the public MaxPlayers property to
+    /// the private field the constructor stores, so the field is read too — the
+    /// number is just as knowable there, and nothing downstream should lose a
+    /// value over where the game happens to keep it. Null only if a future build
+    /// renames both, which drops the key rather than reporting a made-up cap.
+    /// </summary>
+    private static int? GetStartRunLobbyMaxPlayers(StartRunLobby lobby)
+    {
+        var value = SafeGet(() => GetInstanceMemberValue(lobby, "MaxPlayers"))
+                    ?? SafeGet(() => GetInstanceMemberValue(lobby, "_maxPlayers"));
+        if (value == null)
+            return null;
+        try { return Convert.ToInt32(value); }
+        catch { return null; }
     }
 
     private static bool SafeIsAboutToBeginGame(StartRunLobby lobby)

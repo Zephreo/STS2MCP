@@ -565,9 +565,31 @@ public static partial class McpMod
         }
     }
 
+    private static MethodInfo? _progressPathForProfile;
+
+    /// <summary>
+    /// `ProgressSaveManager.GetProgressPathForProfile`, called across game
+    /// versions. v0.111 gave it an optional `bool? forceModState`; C# bakes an
+    /// optional argument into the call site, so a direct call emits a two-
+    /// parameter memberref that does not resolve on the main branch. The arity
+    /// is therefore picked at runtime — passing null asks for the same path the
+    /// one-argument version returned.
+    /// </summary>
     private static string? GetProfileProgressPath(int profileId)
     {
-        try { return ProgressSaveManager.GetProgressPathForProfile(profileId); }
+        try
+        {
+            var method = _progressPathForProfile ??= typeof(ProgressSaveManager).GetMethod(
+                "GetProgressPathForProfile",
+                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (method == null)
+                return null;
+
+            var args = method.GetParameters().Length == 1
+                ? new object?[] { profileId }
+                : new object?[] { profileId, null };
+            return method.Invoke(null, args) as string;
+        }
         catch { return null; }
     }
 
