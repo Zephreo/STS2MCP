@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
@@ -44,6 +45,8 @@ using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Models.RelicPools;
 using MegaCrit.Sts2.Core.Models.CardPools;
+using MegaCrit.Sts2.Core.Models.PotionPools;
+using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
 using MegaCrit.Sts2.Core.Nodes.Screens.CustomRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
@@ -1487,6 +1490,11 @@ public static partial class McpMod
         try { battle["card_plays"] = BuildCardPlaysState(); }
         catch { /* history unavailable while combat is tearing down */ }
 
+        // Where every card went this turn and last — drawn/discarded/exhausted/
+        // generated, not just played. See BuildCardHistoryState.
+        try { battle["card_history"] = BuildCardHistoryState(combatState); }
+        catch { /* history unavailable while combat is tearing down */ }
+
         return battle;
     }
 
@@ -1573,6 +1581,11 @@ public static partial class McpMod
                     && en.CardPlay.Card.Owner == player);
                 state["exhausted_this_turn"] = history.Entries.OfType<CardExhaustedEntry>().Any(en =>
                     en.HappenedThisTurn(combatStateShared) && en.Card.Owner == player);
+                // Whether the end-of-turn flush will run at all: a hook can
+                // suppress it, in which case the WHOLE hand is kept and no card
+                // left in it should read as discarded.
+                if (combatStateShared != null)
+                    state["hand_will_flush"] = Hook.ShouldFlush(combatStateShared, player);
             }
             catch
             {
@@ -1586,6 +1599,19 @@ public static partial class McpMod
             state["draw_pile"] = BuildPileCardList(combatState.DrawPile.Cards, PileType.Draw);
             state["discard_pile"] = BuildPileCardList(combatState.DiscardPile.Cards, PileType.Discard);
             state["exhaust_pile"] = BuildPileCardList(combatState.ExhaustPile.Cards, PileType.Exhaust);
+
+            // Alchemize uses this exact ordered unlocked domain before its
+            // rarity and item rolls on CombatPotionGeneration.
+            try
+            {
+                state["combat_potion_generation_pool"] = player.Character.PotionPool
+                    .GetUnlockedPotions(player.UnlockState)
+                    .Concat(ModelDb.PotionPool<SharedPotionPool>().GetUnlockedPotions(player.UnlockState))
+                    .Where(potion => potion.CanBeGeneratedInCombat)
+                    .Select(BuildPotionInfo)
+                    .ToList();
+            }
+            catch { /* an unavailable pool must not break combat state */ }
         // Card-generation and transformation domains are static for a run and
         // are served by GET /api/v1/cardpools instead; rebuilding them here
         // cost a full pool enumeration per distinct deck card, every poll.
@@ -1813,26 +1839,32 @@ public static partial class McpMod
         {
             if (potion != null)
             {
-                potions.Add(new Dictionary<string, object?>
-                {
-                    ["id"] = potion.Id.Entry,
-                    ["name"] = SafeGetText(() => potion.Title),
-                    ["description"] = SafeGetText(() => potion.DynamicDescription),
-                    ["slot"] = slotIndex,
-                    ["rarity"] = potion.Rarity.ToString(),
-                    ["pool"] = SafeGet(() => potion.Pool.Id.Entry),
-                    ["epoch"] = GetPotionEpoch(potion),
-                    ["usage"] = potion.Usage.ToString(),
-                    ["can_be_generated_in_combat"] = potion.CanBeGeneratedInCombat,
-                    ["can_use_in_combat"] = potion.Usage == PotionUsage.CombatOnly || potion.Usage == PotionUsage.AnyTime,
-                    ["target_type"] = potion.TargetType.ToString(),
-                    ["keywords"] = BuildHoverTips(potion.ExtraHoverTips)
-                });
+                var info = BuildPotionInfo(potion);
+                info["slot"] = slotIndex;
+                potions.Add(info);
             }
             slotIndex++;
         }
         state["potions"] = potions;
         state["max_potion_slots"] = player.MaxPotionCount;
+    }
+
+    private static Dictionary<string, object?> BuildPotionInfo(PotionModel potion)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["id"] = potion.Id.Entry,
+            ["name"] = SafeGetText(() => potion.Title),
+            ["description"] = SafeGetText(() => potion.DynamicDescription),
+            ["rarity"] = potion.Rarity.ToString(),
+            ["pool"] = SafeGet(() => potion.Pool.Id.Entry),
+            ["epoch"] = GetPotionEpoch(potion),
+            ["usage"] = potion.Usage.ToString(),
+            ["can_be_generated_in_combat"] = potion.CanBeGeneratedInCombat,
+            ["can_use_in_combat"] = potion.Usage == PotionUsage.CombatOnly || potion.Usage == PotionUsage.AnyTime,
+            ["target_type"] = potion.TargetType.ToString(),
+            ["keywords"] = BuildHoverTips(potion.ExtraHoverTips)
+        };
     }
 
     private static string? GetPotionEpoch(PotionModel potion)
@@ -1916,8 +1948,17 @@ public static partial class McpMod
             ["is_upgraded"] = card.IsUpgraded,
             ["base_replay_count"] = card.BaseReplayCount,
             ["tags"] = card.Tags.Select(tag => tag.ToString()).ToArray(),
-            ["keywords"] = BuildHoverTips(card.HoverTips)
+            ["keywords"] = BuildHoverTips(card.HoverTips),
+            // Machine-readable CardKeyword names beside the localized hover tips
+            // above. `keywords` is display text and cannot be matched against
+            // reliably; this is what a client tests for Sly/Ethereal/Retain.
+            ["keyword_ids"] = BuildKeywordIds(card)
         };
+        if (card is MadScience madScience)
+        {
+            info["mad_science_type"] = madScience.TinkerTimeType.ToString();
+            info["mad_science_rider"] = madScience.TinkerTimeRider.ToString();
+        }
         // The multiplayer synchronizer already assigns every mutable combat
         // card a stable 16-bit identity. Export the same identity so an MCTS
         // selection can distinguish physical copies with equal card IDs.
@@ -1940,6 +1981,15 @@ public static partial class McpMod
         state["target_type"] = card.TargetType.ToString();
         state["can_play"] = unplayableReason == UnplayableReason.None;
         state["unplayable_reason"] = unplayableReason != UnplayableReason.None ? unplayableReason.ToString() : null;
+        // The game's own predicates, including single-turn grants (Well-Laid
+        // Plans, Hand Trick) that the keyword list alone would miss. Retain is
+        // the only way to tell a card deliberately kept in hand from one the
+        // end-of-turn flush is about to sweep into the discard pile, and that
+        // flush writes nothing to the combat history to read instead.
+        try { state["should_retain_this_turn"] = card.ShouldRetainThisTurn; }
+        catch { }
+        try { state["is_sly_this_turn"] = card.IsSlyThisTurn; }
+        catch { }
         return state;
     }
 

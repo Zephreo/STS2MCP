@@ -103,6 +103,8 @@ Always present at the top level (except `menu`). Contains everything about the l
   "exhaust_pile_count": 1,
   "attacks_played_this_turn": 2,   // Attack cards this player finished playing this turn (Finisher-style counters)
   "exhausted_this_turn": true,     // true if any of this player's cards exhausted this turn (Forgotten Ritual)
+  "hand_will_flush": true,         // whether the end-of-turn flush will run at all. A hook can suppress it, in which
+                                   //   case the WHOLE hand is kept and no card left in it is headed for the discard pile.
   "draw_pile": [ /* Pile Card Objects, in true order (index 0 = next draw; valid until the next shuffle event) */ ],
   "discard_pile": [ /* Pile Card Objects */ ],
   "exhaust_pile": [ /* Pile Card Objects */ ],
@@ -162,7 +164,12 @@ Always present at the top level (except `menu`). Contains everything about the l
   "can_play": true,
   "unplayable_reason": null, // e.g. "NotEnoughEnergy", "Unplayable", null if playable
   "is_upgraded": false,
-  "keywords": [ /* Keyword Objects */ ]
+  "keywords": [ /* Keyword Objects */ ],   // localized hover tips — DISPLAY TEXT, don't match on it
+  "keyword_ids": ["Exhaust"],              // machine-readable CardKeyword names; use these
+  "combat_card_id": 12,      // stable physical identity for the fight; tells two copies of Strike apart
+  "should_retain_this_turn": false,  // Retain keyword OR a single-turn grant (Well-Laid Plans). The only way
+                                     //   to tell a card kept in hand from one the end-of-turn flush will discard.
+  "is_sly_this_turn": false  // Sly keyword OR a single-turn grant (Hand Trick)
 }
 ```
 
@@ -179,7 +186,9 @@ Always present at the top level (except `menu`). Contains everything about the l
   "rarity": "Common",
   "is_upgraded": false,
   "target_type": "AnyEnemy", // None, Self, AnyEnemy, AllEnemies, etc.
-  "keywords": [ /* Keyword Objects */ ]
+  "keywords": [ /* Keyword Objects */ ],   // localized hover tips — DISPLAY TEXT, don't match on it
+  "keyword_ids": ["Exhaust"],              // machine-readable CardKeyword names; use these
+  "combat_card_id": 12       // stable physical identity for the fight
 }
 ```
 
@@ -1835,17 +1844,63 @@ Finish the Crystal Sphere minigame.
     // the local client's history includes remote players' plays).  Appended
     // in play order; "index" is a stable per-combat sequence number, so
     // pollers can dedup with "index > last seen".  Cleared at combat start.
+    // NOTE: emitted in SINGLEPLAYER TOO, despite living in this section.
     "card_plays": [
       {
         "index": 0,
         "round": 1,
+        "player_turn": 1,             // the OWNER's turn number. Prefer this
+                                       // over "round" for grouping plays into
+                                       // turns: an extra turn carries the same
+                                       // round as the turn before it.
         "player": "The Ironclad",
         "is_local": true,
         "card_id": "STRIKE",
         "card_name": "Strike",
+        "combat_card_id": 12,         // physical instance, joins to the pile
+                                       // snapshots; null if unavailable
+        "result_pile": "Discard",     // where the card went after resolving —
+                                       // "Discard" vs "Exhaust" vs "Hand"
+        "play_index": 0,              // position in a Replay series
+        "play_count": 1,              // total plays in that series
+        "is_auto_play": false,        // true = Mayhem-style, not played by hand
         "target": "KIN_PRIEST"        // monster model id, player character
                                        // title for ally-targeted cards, or
                                        // null for untargeted cards
+      }
+    ],
+
+    // Where every card WENT during the current and previous player turn.
+    // "card_plays" answers "what was played"; this answers everything else.
+    // Together they reconstruct a whole turn's card churn without diffing pile
+    // snapshots across polls — which cannot work on its own, because a card
+    // drawn and discarded between two polls is never observed in any pile, and
+    // a card mid-resolution sits in a "Play" pile that is not exported.
+    //
+    // IMPORTANT: the end-of-turn hand flush writes NOTHING here.  The game
+    // moves leftover cards with CardPileCmd.Add rather than CardCmd.Discard,
+    // and only the latter reaches the combat history.  So every "discarded"
+    // row is a MID-TURN discard, and "was this card simply left in hand?" must
+    // be answered from the hand itself (see "should_retain_this_turn").
+    //
+    // Bounded to this turn plus each owner's previous turn, so a long fight
+    // does not re-serialize hundreds of rows every poll.  Reading the previous
+    // turn is what lets a client wait until a turn is complete — end-of-turn
+    // cleanup resolves after the turn ends — before acting on it.
+    // Emitted in singleplayer too.  Added in 0.4.0-fork.6.
+    "card_history": [
+      {
+        "index": 0,
+        "kind": "drawn",              // played | drawn | discarded |
+                                       // exhausted | generated
+        "round": 1,
+        "player_turn": 1,             // the OWNER's turn number; see above
+        "is_local": true,
+        "card_id": "STRIKE",
+        "card_name": "Strike",
+        "is_upgraded": false,
+        "combat_card_id": 12,         // physical instance; null if unavailable
+        "keyword_ids": ["Sly"]        // machine-readable CardKeyword names
       }
     ],
 

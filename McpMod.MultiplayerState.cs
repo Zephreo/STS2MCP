@@ -8,7 +8,9 @@ using MegaCrit.Sts2.Core.Combat.History;
 using MegaCrit.Sts2.Core.Combat.History.Entries;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Events;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes.Combat;
@@ -350,6 +352,7 @@ public static partial class McpMod
         try
         {
             battle["card_plays"] = BuildCardPlaysState();
+            battle["card_history"] = BuildCardHistoryState(combatState);
             battle["player_damage"] = BuildPlayerDamageState(runState, combatState.RoundNumber);
         }
         catch
@@ -369,6 +372,55 @@ public static partial class McpMod
     {
         try { return _historyRoundProp?.GetValue(entry) is int r ? r : 0; }
         catch { return 0; }
+    }
+
+    // CombatHistoryEntry._playerTurnNumbers is private; read it via cached
+    // reflection so each row can carry the card OWNER's turn number. The public
+    // RoundNumber is not enough: an extra turn carries the same RoundNumber as
+    // the turn before it, so a consumer grouping rows into turns would merge the
+    // two. PlayerCombatState.TurnNumber counts extra turns, and this dictionary
+    // is the snapshot of it taken when the entry was logged.
+    private static readonly FieldInfo? _historyTurnNumbersField =
+        typeof(CombatHistoryEntry).GetField("_playerTurnNumbers",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+
+    private static int? GetEntryPlayerTurn(CombatHistoryEntry entry, Player? owner)
+    {
+        if (owner == null)
+            return null;
+        try
+        {
+            if (_historyTurnNumbersField?.GetValue(entry) is Dictionary<ulong, int> turns
+                && turns.TryGetValue(owner.NetId, out var turn))
+                return turn;
+        }
+        catch { /* layout changed — the row still carries round/card id */ }
+        return null;
+    }
+
+    // The multiplayer synchronizer ids every mutable combat card; that identity
+    // is what tells two copies of Strike apart across polls. Deliberately NOT
+    // gated on Pile?.IsCombatPile the way BuildCardInfo is: a history row may
+    // name a card that has since been transformed or destroyed and so belongs to
+    // no pile, and its id is exactly what lets a consumer match it back to the
+    // hand it was last seen in.
+    private static uint? GetCombatCardId(CardModel? card)
+    {
+        if (card == null)
+            return null;
+        try { return NetCombatCard.FromModel(card).CombatCardIndex; }
+        catch { return null; }
+    }
+
+    // CardModel.Owner throws once the owning creature is gone (combat teardown,
+    // a destroyed card), and every caller here is inside a state build that must
+    // not fail as a whole.
+    private static Player? CardOwner(CardModel? card)
+    {
+        if (card == null)
+            return null;
+        try { return card.Owner; }
+        catch { return null; }
     }
 
     private static List<Dictionary<string, object?>> BuildCardPlaysState()
@@ -392,10 +444,18 @@ public static partial class McpMod
                 // within a fight, so pollers dedup with "index > last seen".
                 ["index"] = idx++,
                 ["round"] = GetEntryRound(entry),
+                // An extra turn shares its round with the turn before it, so
+                // `round` alone cannot group plays into turns.
+                ["player_turn"] = GetEntryPlayerTurn(entry, CardOwner(cardPlay.Card)),
                 ["player"] = SafeGetText(() => cardPlay.Card.Owner.Character.Title),
                 ["is_local"] = LocalContext.IsMe(cardPlay.Card.Owner),
                 ["card_id"] = SafeGetText(() => cardPlay.Card.Id.Entry),
                 ["card_name"] = SafeGetText(() => cardPlay.Card.Title),
+                // Joins this play to the instance-identified pile snapshots.
+                ["combat_card_id"] = GetCombatCardId(cardPlay.Card),
+                // Where the card went after resolving — the difference between
+                // "played and discarded" and "played and exhausted".
+                ["result_pile"] = cardPlay.ResultPile.ToString(),
                 ["play_index"] = cardPlay.PlayIndex,
                 ["play_count"] = cardPlay.PlayCount,
                 ["is_auto_play"] = cardPlay.IsAutoPlay,
@@ -403,6 +463,91 @@ public static partial class McpMod
             });
         }
         return plays;
+    }
+
+    /// <summary>
+    /// Where every card went during the current and previous player turn.
+    ///
+    /// `card_plays` answers "what was played"; this answers everything else, and
+    /// the two together are what let a client reconstruct a whole turn's card
+    /// churn without diffing pile snapshots across polls. Diffing cannot work on
+    /// its own: a card drawn and discarded between two polls is never observed
+    /// in any pile, and a card mid-resolution sits in PileType.Play, which is not
+    /// exported at all.
+    ///
+    /// Deliberately NOT a source for "left in hand at end of turn":
+    /// CombatManager.FlushPlayerHand moves the leftovers with CardPileCmd.Add
+    /// rather than CardCmd.Discard, and only the latter reaches
+    /// CombatHistory.CardDiscarded — so the end-of-turn flush logs nothing here.
+    /// Every `discarded` row is therefore a mid-turn discard, and a client after
+    /// the flush must read the hand instead (see `should_retain_this_turn`).
+    ///
+    /// Bounded to this turn plus each owner's previous turn so a long fight does
+    /// not re-serialize hundreds of rows on every poll. Reading the previous turn
+    /// is what lets a client wait until a turn is complete — the end-of-turn
+    /// cleanup resolves after the turn ends — before scoring it.
+    /// </summary>
+    private static List<Dictionary<string, object?>> BuildCardHistoryState(ICombatState combatState)
+    {
+        var rows = new List<Dictionary<string, object?>>();
+        int idx = 0;
+        foreach (var entry in CombatManager.Instance.History.Entries)
+        {
+            string kind;
+            CardModel? card;
+            switch (entry)
+            {
+                case CardPlayFinishedEntry played: kind = "played"; card = played.CardPlay.Card; break;
+                case CardDrawnEntry drawn: kind = "drawn"; card = drawn.Card; break;
+                case CardDiscardedEntry discarded: kind = "discarded"; card = discarded.Card; break;
+                case CardExhaustedEntry exhausted: kind = "exhausted"; card = exhausted.Card; break;
+                case CardGeneratedEntry generated: kind = "generated"; card = generated.Card; break;
+                default: continue;
+            }
+            if (card == null)
+                continue;
+
+            var owner = CardOwner(card);
+            bool inScope;
+            try
+            {
+                inScope = entry.HappenedThisTurn(combatState)
+                          || (owner != null && entry.HappenedLastPlayerTurn(owner));
+            }
+            catch { continue; }
+            if (!inScope)
+                continue;
+
+            rows.Add(new Dictionary<string, object?>
+            {
+                ["index"] = idx++,
+                ["kind"] = kind,
+                ["round"] = GetEntryRound(entry),
+                ["player_turn"] = GetEntryPlayerTurn(entry, owner),
+                ["is_local"] = LocalContext.IsMine(card),
+                ["card_id"] = SafeGetText(() => card.Id.Entry),
+                ["card_name"] = SafeGetText(() => card.Title),
+                ["is_upgraded"] = card.IsUpgraded,
+                ["combat_card_id"] = GetCombatCardId(card),
+                // Machine-readable CardKeyword names. The `keywords` field on a
+                // card object is the localized hover-tip list and cannot be
+                // matched against reliably.
+                ["keyword_ids"] = BuildKeywordIds(card),
+            });
+        }
+        return rows;
+    }
+
+    /// <summary>
+    /// CardKeyword enum names for a card, or null when they cannot be read.
+    /// Distinct from the localized `keywords` hover tips that card objects carry.
+    /// </summary>
+    private static string[]? BuildKeywordIds(CardModel? card)
+    {
+        if (card == null)
+            return null;
+        try { return card.Keywords.Select(kw => kw.ToString()).ToArray(); }
+        catch { return null; }
     }
 
     private static List<Dictionary<string, object?>> BuildPlayerDamageState(RunState runState, int currentRound)
