@@ -47,6 +47,7 @@ using MegaCrit.Sts2.Core.Models.RelicPools;
 using MegaCrit.Sts2.Core.Models.CardPools;
 using MegaCrit.Sts2.Core.Models.PotionPools;
 using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Orbs;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
 using MegaCrit.Sts2.Core.Nodes.Screens.CustomRun;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
@@ -60,6 +61,7 @@ using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.Screens.Timeline;
 using MegaCrit.Sts2.Core.Timeline.Epochs;
+using MegaCrit.Sts2.Core.ValueProps;
 using MegaCrit.Sts2.Core.Nodes.Screens.Settings;
 using MegaCrit.Sts2.Core.Nodes.Screens.ProfileScreen;
 using Godot;
@@ -1534,11 +1536,12 @@ public static partial class McpMod
         // Enemies
         var enemies = new List<Dictionary<string, object?>>();
         var entityCounts = new Dictionary<string, int>();
+        var localCreature = LocalContext.GetMe(runState)?.Creature;
         foreach (var creature in combatState.Enemies)
         {
             if (creature.IsAlive)
             {
-                enemies.Add(BuildEnemyState(creature, entityCounts));
+                enemies.Add(BuildEnemyState(creature, entityCounts, localCreature));
             }
         }
         battle["enemies"] = enemies;
@@ -1639,6 +1642,27 @@ public static partial class McpMod
             state["energy"] = combatState.Energy;
             state["max_energy"] = combatState.MaxEnergy;
 
+            // Card models query combat history directly for these conditions.
+            // Export the owner-scoped values so the native forward model can
+            // seed an exact mid-turn search instead of inferring from HP/piles.
+            try
+            {
+                var history = CombatManager.Instance.History.Entries;
+                state["lost_hp_this_turn"] = history.OfType<DamageReceivedEntry>().Any(entry =>
+                    entry.HappenedThisTurn(creature.CombatState)
+                    && entry.Receiver == creature
+                    && entry.Result.UnblockedDamage > 0);
+                state["cards_created_this_combat"] = history.OfType<CardGeneratedEntry>().Count(entry =>
+                    entry.Creator == player);
+                state["lightning_channeled_this_combat"] = history.OfType<OrbChanneledEntry>().Count(entry =>
+                    entry.Actor.Player == player && entry.Orb is LightningOrb);
+            }
+            catch
+            {
+                // History can disappear while combat tears down. The Rust
+                // builder treats omitted counters as zero on those inert states.
+            }
+
             // Counts every turn THIS player takes, extra turns included (battle.round
             // only ticks on a normal side switch). Clients use it as the "a new player
             // turn began" edge, which they cannot get from is_play_phase alone: with
@@ -1677,8 +1701,19 @@ public static partial class McpMod
                     en.HappenedThisTurn(combatStateShared)
                     && en.CardPlay.Card.Type == CardType.Attack
                     && en.CardPlay.Card.Owner == player);
+                state["energy_spent_this_turn"] = history.Entries.OfType<EnergySpentEntry>()
+                    .Where(en => en.HappenedThisTurn(combatStateShared) && en.Actor.Player == player)
+                    .Sum(en => en.Amount);
                 state["exhausted_this_turn"] = history.Entries.OfType<CardExhaustedEntry>().Any(en =>
                     en.HappenedThisTurn(combatStateShared) && en.Card.Owner == player);
+                state["cards_drawn_this_turn"] = history.Entries.OfType<CardDrawnEntry>().Count(en =>
+                    en.HappenedThisTurn(combatStateShared) && en.Card.Owner == player && !en.FromHandDraw);
+                state["cards_drawn_this_combat"] = history.Entries.OfType<CardDrawnEntry>().Count(en =>
+                    en.Card.Owner == player);
+                state["doom_applied_this_turn"] = history.Entries.OfType<PowerReceivedEntry>().Any(en =>
+                    en.HappenedThisTurn(combatStateShared)
+                    && en.Applier == creature
+                    && en.Power.GetType().Name == "DoomPower");
                 // Whether the end-of-turn flush will run at all: a hook can
                 // suppress it, in which case the WHOLE hand is kept and no card
                 // left in it should read as discarded.
@@ -2057,6 +2092,11 @@ public static partial class McpMod
             info["mad_science_type"] = madScience.TinkerTimeType.ToString();
             info["mad_science_rider"] = madScience.TinkerTimeRider.ToString();
         }
+        if (card is GeneticAlgorithm geneticAlgorithm)
+        {
+            info["current_block"] = geneticAlgorithm.CurrentBlock;
+            info["increased_block"] = geneticAlgorithm.IncreasedBlock;
+        }
         // The multiplayer synchronizer already assigns every mutable combat
         // card a stable 16-bit identity. Export the same identity so an MCTS
         // selection can distinguish physical copies with equal card IDs.
@@ -2136,7 +2176,10 @@ public static partial class McpMod
         return list;
     }
 
-    private static Dictionary<string, object?> BuildEnemyState(Creature creature, Dictionary<string, int> entityCounts)
+    private static Dictionary<string, object?> BuildEnemyState(
+        Creature creature,
+        Dictionary<string, int> entityCounts,
+        Creature? localCreature = null)
     {
         var monster = creature.Monster;
         string baseId = monster?.Id.Entry ?? "unknown";
@@ -2161,6 +2204,32 @@ public static partial class McpMod
             ["block"] = creature.Block,
             ["status"] = BuildPowersState(creature)
         };
+        try
+        {
+            if (localCreature != null)
+            {
+                var history = CombatManager.Instance.History;
+                state["local_powered_hits_this_turn"] = history.Entries.OfType<DamageReceivedEntry>().Count(en =>
+                    en.HappenedThisTurn(creature.CombatState)
+                    && en.Receiver == creature
+                    && en.Dealer == localCreature
+                    && en.Result.Props.IsPoweredAttack());
+                state["owner_side_powered_hits_this_turn"] = history.Entries.OfType<DamageReceivedEntry>().Count(en =>
+                    en.HappenedThisTurn(creature.CombatState)
+                    && en.Receiver == creature
+                    && en.Dealer != null
+                    && (en.Dealer == localCreature || en.Dealer.PetOwner?.Creature == localCreature)
+                    && en.Result.Props.IsPoweredAttack());
+                state["ally_powered_hits_this_turn"] = history.Entries.OfType<DamageReceivedEntry>().Count(en =>
+                    en.HappenedThisTurn(creature.CombatState)
+                    && en.Receiver == creature
+                    && en.Dealer != null
+                    && en.Dealer != localCreature
+                    && en.Dealer.Side == localCreature.Side
+                    && en.Result.Props.IsPoweredAttack());
+            }
+        }
+        catch { }
 
         // Intents
         if (monster?.NextMove is MoveState moveState)

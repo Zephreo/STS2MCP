@@ -94,11 +94,15 @@ public static partial class McpMod
         }
 
         var characters = new Dictionary<string, object?>();
+        var characterPoolOrder = new List<string>();
         foreach (var character in ModelDb.AllCharacters)
         {
             var name = SafeGetText(() => character.Title);
+            var poolTitle = character.CardPool?.Title;
             if (!string.IsNullOrWhiteSpace(name))
-                characters[name!] = character.CardPool?.Title;
+                characters[name!] = poolTitle;
+            if (!string.IsNullOrWhiteSpace(poolTitle) && !characterPoolOrder.Contains(poolTitle))
+                characterPoolOrder.Add(poolTitle);
         }
 
         var result = new Dictionary<string, object?>
@@ -106,6 +110,7 @@ public static partial class McpMod
             ["source"] = source,
             ["multiplayer_constraint"] = constraint.ToString(),
             ["characters"] = characters,
+            ["character_pool_order"] = characterPoolOrder,
             ["pools"] = pools
         };
 

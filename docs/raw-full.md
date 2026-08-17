@@ -1342,6 +1342,7 @@ follows the player count. Fetch it once when a run starts, not per tick.
   "source": "run",                     // "run", "profile" (no run loaded), or "none"
   "multiplayer_constraint": "SingleplayerOnly",
   "characters": { "Ironclad": "ironclad" },   // character display name -> pool title
+  "character_pool_order": ["ironclad", "silent", "defect", "necrobinder", "regent"],
   "pools": {
     "ironclad": {
       "is_colorless": false,

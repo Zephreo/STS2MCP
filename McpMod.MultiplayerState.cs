@@ -332,10 +332,11 @@ public static partial class McpMod
         // Enemies
         var enemies = new List<Dictionary<string, object?>>();
         var entityCounts = new Dictionary<string, int>();
+        var localCreature = LocalContext.GetMe(runState)?.Creature;
         foreach (var creature in combatState.Enemies)
         {
             if (creature.IsAlive)
-                enemies.Add(BuildEnemyState(creature, entityCounts));
+                enemies.Add(BuildEnemyState(creature, entityCounts, localCreature));
         }
         battle["enemies"] = enemies;
 
@@ -529,6 +530,7 @@ public static partial class McpMod
                 ["card_name"] = SafeGetText(() => card.Title),
                 ["is_upgraded"] = card.IsUpgraded,
                 ["combat_card_id"] = GetCombatCardId(card),
+                ["from_hand_draw"] = entry is CardDrawnEntry drawnEntry && drawnEntry.FromHandDraw,
                 // Machine-readable CardKeyword names. The `keywords` field on a
                 // card object is the localized hover-tip list and cannot be
                 // matched against reliably.
