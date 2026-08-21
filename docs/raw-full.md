@@ -102,6 +102,11 @@ Always present at the top level (except `menu`). Contains everything about the l
   "discard_pile_count": 3,
   "exhaust_pile_count": 1,
   "attacks_played_this_turn": 2,   // Attack cards this player finished playing this turn (Finisher-style counters)
+  "stars_gained_this_turn": 2,     // Stars GAINED this turn (Radiate). The positive StarsModifiedEntry sum - neither the
+                                   //   current "stars" total nor the Stars spent, since a turn can gain and spend the same Star.
+                                   //   Added in 0.5.4; omitted by older builds, which clients should read as 0.
+  "unblocked_hits_taken_this_combat": 3,  // Times this player took unblocked damage THIS COMBAT (Tear Asunder). A count of
+                                   //   events, not HP lost; a fully blocked hit does not count. Added in 0.5.4.
   "exhausted_this_turn": true,     // true if any of this player's cards exhausted this turn (Forgotten Ritual)
   "hand_will_flush": true,         // whether the end-of-turn flush will run at all. A hook can suppress it, in which
                                    //   case the WHOLE hand is kept and no card left in it is headed for the discard pile.

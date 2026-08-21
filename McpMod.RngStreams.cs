@@ -1,7 +1,9 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Net;
 using System.Reflection;
+using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Runs;
@@ -37,6 +39,15 @@ public static partial class McpMod
     // with their streams: a raw counter is not enough to predict an unknown map
     // point or a card-rarity roll without the running odds value that the roll
     // is compared against.
+    //
+    // Relics are the one predictable thing a stream cannot describe. They come
+    // out of Player.RelicGrabBag - per-rarity deques shuffled ONCE at run start
+    // off RunRng.UpFront and then mutated for the rest of the run by every
+    // source that hands out a relic. Reconstructing that from the seed would
+    // mean replaying every pull, every RelicCmd.Obtain, and every
+    // IsAllowed prune since floor 1, and a single miss desyncs it silently for
+    // the rest of the run - so the deques are exported directly instead. See
+    // BuildRelicGrabBag.
     //
     // In multiplayer the host syncs the whole RunRngSet at combat start
     // (SyncRngMessage) and lockstep keeps counters aligned, so the local set
@@ -365,5 +376,150 @@ public static partial class McpMod
             }
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// GET /api/v1/relicbag - every player's relic deques, in draw order.
+    /// </summary>
+    /// <remarks>
+    /// Its own endpoint rather than a field on the state, because the two have
+    /// opposite shapes. The bag is ~1.8 KB of relic ids at run start and the
+    /// state is polled ten times a second, but the bag only CHANGES when a
+    /// relic leaves it — at an elite, a chest, an event, a shop — so a consumer
+    /// wants it a handful of times per act, not a hundred times a floor.
+    ///
+    /// Deliberately NOT called "relicpools", for all that it sits beside
+    /// /api/v1/cardpools: a card pool is static for a whole run and is fetched
+    /// once, while this is a BAG that shrinks every time a relic leaves it.
+    /// Never cache it across rooms — fetch it when planning a route and again
+    /// when a shop opens.
+    /// </remarks>
+    private static void HandleGetRelicBag(HttpListenerResponse response)
+    {
+        try
+        {
+            var dataTask = RunOnMainThread(BuildRelicBags);
+            SendJson(response, dataTask.GetAwaiter().GetResult());
+        }
+        catch (Exception ex)
+        {
+            SendError(response, 500, $"Failed to build relic bags: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Every player's bag, keyed by slot so a multiplayer consumer can tell
+    /// whose shop it is predicting.
+    /// </summary>
+    private static Dictionary<string, object?> BuildRelicBags()
+    {
+        var runState = SafeGet(() => (object?)RunManager.Instance.DebugOnlyGetState()) as RunState;
+        if (runState == null)
+            return new Dictionary<string, object?> { ["error"] = "No run in progress." };
+
+        var players = new List<Dictionary<string, object?>>();
+        foreach (var player in runState.Players)
+        {
+            var bag = BuildRelicGrabBag(player);
+            if (bag == null)
+                continue;
+            var entry = new Dictionary<string, object?>
+            {
+                ["net_id"] = SafeGet(() => (object?)player.NetId),
+                ["slot_index"] = SafeGet(() => (object?)runState.GetPlayerSlotIndex(player)),
+                ["is_me"] = LocalContext.IsMe(player),
+                ["deques"] = bag,
+            };
+            players.Add(entry);
+        }
+
+        return new Dictionary<string, object?> { ["players"] = players };
+    }
+
+    /// <summary>
+    /// Exports one player's relic grab bag: the per-rarity deques that every
+    /// relic in the run is drawn from, in order.
+    /// </summary>
+    /// <remarks>
+    /// ORDER IS THE POINT, and so is both ends of it. Reward sources take the
+    /// front (RelicFactory.PullNextRelicFromFront - elites, chests, events,
+    /// ancients) while a merchant takes the BACK
+    /// (MerchantRelicEntry.FillSlot -> PullNextRelicFromBack, filtered to
+    /// IsAllowedInShops), so exporting a head or a summary would predict the
+    /// wrong half of the run.
+    ///
+    /// The bag is per PLAYER, which is what multiplayer needs: every player
+    /// draws from their own deques. RunState.SharedRelicGrabBag is deliberately
+    /// NOT exported - every use of it in the game is a Remove() and nothing
+    /// ever pulls from it, so it is a de-duplication ledger rather than a
+    /// source. The MP fallback queue IS exported: NTreasureRoomRelicCollection
+    /// moves a relic a teammate claimed into it, and GetAvailableDeque falls
+    /// back to it once a rarity is exhausted.
+    ///
+    /// Skipped: relics the bag has already lost. A pull removes its relic
+    /// immediately, so a reward the player declined is gone from these lists
+    /// without ever appearing in player.relics - which is exactly why the lists
+    /// are exported rather than inferred from what the player is holding.
+    /// </remarks>
+    private static Dictionary<string, object?>? BuildRelicGrabBag(Player player)
+    {
+        try
+        {
+            var bag = player.RelicGrabBag;
+            if (bag == null || !bag.IsPopulated)
+                return null;
+
+            var result = new Dictionary<string, object?>();
+
+            // ToSerializable is the game's own public view of the deques and
+            // keeps their order, so this cannot drift from what the save holds.
+            var save = bag.ToSerializable();
+            foreach (var pair in save.RelicIdLists)
+            {
+                var ids = new List<string>();
+                foreach (var id in pair.Value)
+                    ids.Add(id.Entry);
+                result[SnakeCase(pair.Key.ToString())] = ids;
+            }
+
+            var fallback = ReadMpFallback(bag);
+            if (fallback != null && fallback.Count > 0)
+                result["mp_fallback"] = fallback;
+
+            return result.Count > 0 ? result : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The multiplayer fallback queue, which ToSerializable does not carry.
+    /// </summary>
+    private static List<string>? ReadMpFallback(object bag)
+    {
+        try
+        {
+            var field = bag.GetType().GetField(
+                "_mpFallbackDequeue", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (field?.GetValue(bag) is not IEnumerable relics)
+                return null;
+
+            var ids = new List<string>();
+            foreach (var relic in relics)
+            {
+                var idProp = relic?.GetType().GetProperty("Id");
+                var id = idProp?.GetValue(relic);
+                var entry = id?.GetType().GetProperty("Entry")?.GetValue(id) as string;
+                if (entry != null)
+                    ids.Add(entry);
+            }
+            return ids;
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

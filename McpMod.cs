@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -19,7 +19,7 @@ namespace STS2_MCP;
 [ModInitializer("Initialize")]
 public static partial class McpMod
 {
-    public const string Version = "0.5.3";
+    public const string Version = "0.5.5";
     public const int DefaultPort = 15526;
     private const string ConfigFileName = "STS2_MCP.conf";
 
@@ -331,6 +331,13 @@ public static partial class McpMod
             {
                 if (request.HttpMethod == "GET")
                     HandleGetCardPools(response);
+                else
+                    SendError(response, 405, "Method not allowed");
+            }
+            else if (path == "/api/v1/relicbag")
+            {
+                if (request.HttpMethod == "GET")
+                    HandleGetRelicBag(response);
                 else
                     SendError(response, 405, "Method not allowed");
             }

@@ -90,6 +90,20 @@ Example searches:
 
 `GET /api/v1/cardpools` returns every unlocked card pool (all five characters plus the shared Colorless, Curse, Deprecated, Event, Quest, Status and Token pools), each card carrying `id`, `name`, `type`, `rarity`, its own `pool` and `can_be_generated_in_combat`. Added in 0.5.0, replacing the five per-state `combat_*_pool` fields. **Card order is load-bearing** — the game's `Rng.NextItem` indexes straight into these lists — so never sort them. The payload is static for a run but not across runs (multiplayer unlock state is the union over all players), so fetch it at each run start.
 
+`GET /api/v1/relicbag` returns each player's **relic grab bag**: the per-rarity deques (`common` / `uncommon` / `rare` / `shop`, plus `mp_fallback`) that every relic in the run is drawn from, in draw order.
+
+```json
+{"players": [{"net_id": 0, "slot_index": 0, "is_me": true,
+              "deques": {"common": ["AKABEKO", "ANCHOR"], "rare": ["..."], "shop": ["..."]}}]}
+```
+
+Added in 0.5.5. **Order is load-bearing, and so is both ends of it**: reward sources take the FRONT (`RelicFactory.PullNextRelicFromFront` — elites, chests, events, ancients) while a merchant takes the BACK (`MerchantRelicEntry` → `PullNextRelicFromBack`, filtered to `IsAllowedInShops`). Never sort them.
+
+Deliberately not called `relicpools`, for all that it sits beside `/api/v1/cardpools`: a card pool is static for a run and is fetched once, while this is a **bag** that shrinks every time a relic leaves it. Do not cache across rooms — fetch it when planning a route and again when a shop opens.
+
+The bag is per **player** (each draws from their own deques, which is what multiplayer needs). `RunState.SharedRelicGrabBag` is deliberately not exported: every use of it in the game is a `Remove()` and nothing ever pulls from it, so it is a de-duplication ledger rather than a source. A relic that was pulled and then *declined* is gone from these lists without ever appearing in `player.relics`, which is why the lists are exported rather than inferred from what the player holds.
+
+
 `GET /api/v1/profiles` returns the three profile slots:
 
 ```json

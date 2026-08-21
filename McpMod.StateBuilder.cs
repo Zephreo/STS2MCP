@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -1710,6 +1710,17 @@ public static partial class McpMod
                     en.HappenedThisTurn(combatStateShared) && en.Card.Owner == player && !en.FromHandDraw);
                 state["cards_drawn_this_combat"] = history.Entries.OfType<CardDrawnEntry>().Count(en =>
                     en.Card.Owner == player);
+                // Stars GAINED this turn (Radiate's hit count). The positive
+                // StarsModifiedEntry sum, which is neither the current Star total
+                // nor the Stars spent - a turn can gain and spend the same Star.
+                state["stars_gained_this_turn"] = history.Entries.OfType<StarsModifiedEntry>()
+                    .Where(en => en.HappenedThisTurn(combatStateShared) && en.Amount > 0 && en.Actor == creature)
+                    .Sum(en => en.Amount);
+                // Times this player took unblocked damage THIS COMBAT (Tear
+                // Asunder's hit count). A count of events, not HP lost, and a
+                // fully blocked hit does not count.
+                state["unblocked_hits_taken_this_combat"] = history.Entries.OfType<DamageReceivedEntry>()
+                    .Count(en => en.Receiver == creature && en.Result.UnblockedDamage > 0);
                 state["doom_applied_this_turn"] = history.Entries.OfType<PowerReceivedEntry>().Any(en =>
                     en.HappenedThisTurn(combatStateShared)
                     && en.Applier == creature
