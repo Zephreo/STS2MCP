@@ -90,6 +90,13 @@ Example searches:
 
 `GET /api/v1/cardpools` returns every unlocked card pool (all five characters plus the shared Colorless, Curse, Deprecated, Event, Quest, Status and Token pools), each card carrying `id`, `name`, `type`, `rarity`, its own `pool` and `can_be_generated_in_combat`. Added in 0.5.0, replacing the five per-state `combat_*_pool` fields. **Card order is load-bearing** — the game's `Rng.NextItem` indexes straight into these lists — so never sort them. The payload is static for a run but not across runs (multiplayer unlock state is the union over all players), so fetch it at each run start.
 
+`GET /api/v1/potionpools` returns every unlocked potion pool, each potion carrying `id`, `name`, `rarity` and `can_be_generated_in_combat`, plus a `characters` map (character title -> its pool id) and `shared_pool`.
+
+Added in 0.5.5. **Order is load-bearing** — `PotionFactory.CreateRandomPotion` does `rng.NextItem(list.Where(rarity))` over the unlocked pool — so never sort them. `GetPotionOptions` concatenates the character's own pool with the shared one **in that order**, which is why both the per-character mapping and the shared pool id are exported: a client has to rebuild the same list to index into it.
+
+Static for a run but not across runs (multiplayer unlock state is the union over all players), so fetch it at each run start — the same lifecycle as `/api/v1/cardpools`, unlike the mutating `/api/v1/relicbag`.
+
+
 `GET /api/v1/relicbag` returns each player's **relic grab bag**: the per-rarity deques (`common` / `uncommon` / `rare` / `shop`, plus `mp_fallback`) that every relic in the run is drawn from, in draw order.
 
 ```json

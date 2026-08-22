@@ -136,6 +136,11 @@ public static partial class McpMod
             // and GetDefaultTransformationOptions reads THIS one. Export it so
             // clients never have to invert the pool -> cards mapping.
             ["pool"] = SafeGetCardPoolTitle(card),
+            // CardFactory.FilterForPlayerCount drops the constraint that does
+            // not match the lobby, so anything replaying a generation roll
+            // (shop shelves, card rewards) needs it to index the same list the
+            // game did.
+            ["multiplayer_constraint"] = card.MultiplayerConstraint.ToString(),
             ["can_be_generated_in_combat"] = SafeCanBeGeneratedInCombat(card)
         };
     }

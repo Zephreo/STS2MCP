@@ -334,6 +334,13 @@ public static partial class McpMod
                 else
                     SendError(response, 405, "Method not allowed");
             }
+            else if (path == "/api/v1/potionpools")
+            {
+                if (request.HttpMethod == "GET")
+                    HandleGetPotionPools(response);
+                else
+                    SendError(response, 405, "Method not allowed");
+            }
             else if (path == "/api/v1/relicbag")
             {
                 if (request.HttpMethod == "GET")
