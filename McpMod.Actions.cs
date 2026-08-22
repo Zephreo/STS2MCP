@@ -69,6 +69,7 @@ public static partial class McpMod
             "choose_event_option" => ExecuteChooseEventOption(data),
             "advance_dialogue" => ExecuteAdvanceDialogue(),
             "choose_rest_option" => ExecuteChooseRestOption(data),
+            "shop_open" => ExecuteShopOpen(player),
             "shop_purchase" => ExecuteShopPurchase(player, data),
             "claim_reward" => ExecuteClaimReward(data),
             "select_card_reward" => ExecuteSelectCardReward(data),
@@ -458,16 +459,71 @@ public static partial class McpMod
         };
     }
 
+    private static Dictionary<string, object?> ExecuteShopOpen(Player player)
+    {
+        if (player.RunState.CurrentRoom is MerchantRoom)
+        {
+            var merchantRoom = NMerchantRoom.Instance;
+            if (merchantRoom?.Inventory == null)
+                return Error("Shop inventory UI is not ready yet; wait a moment and retry");
+            if (merchantRoom.Inventory.IsOpen)
+                return new Dictionary<string, object?>
+                {
+                    ["status"] = "ok",
+                    ["message"] = "Shop inventory is already open"
+                };
+
+            merchantRoom.OpenInventory();
+            return new Dictionary<string, object?>
+            {
+                ["status"] = "ok",
+                ["message"] = "Opening shop inventory"
+            };
+        }
+
+        if (player.RunState.CurrentRoom is EventRoom eventRoom
+            && eventRoom.CanonicalEvent is FakeMerchant
+            && (eventRoom.LocalMutableEvent ?? eventRoom.CanonicalEvent) is FakeMerchant fakeMerchant)
+        {
+            if (fakeMerchant.StartedFight)
+                return Error("The fake merchant is no longer available");
+
+            var eventUi = NEventRoom.Instance;
+            var fakeMerchantNode = eventUi == null ? null : FindFirst<NFakeMerchant>(eventUi);
+            var inventoryUi = fakeMerchantNode == null ? null : FindFirst<NMerchantInventory>(fakeMerchantNode);
+            if (fakeMerchantNode == null || inventoryUi == null)
+                return Error("Fake merchant inventory UI is not ready yet; wait a moment and retry");
+            if (inventoryUi.IsOpen)
+                return new Dictionary<string, object?>
+                {
+                    ["status"] = "ok",
+                    ["message"] = "Fake merchant inventory is already open"
+                };
+
+            var button = fakeMerchantNode.MerchantButton;
+            if (button == null || !button.Visible || !button.IsEnabled)
+                return Error("Fake merchant inventory cannot be opened right now");
+
+            button.ForceClick();
+            return new Dictionary<string, object?>
+            {
+                ["status"] = "ok",
+                ["message"] = "Opening fake merchant inventory"
+            };
+        }
+
+        return Error("Not in a shop");
+    }
+
     private static Dictionary<string, object?> ExecuteShopPurchase(Player player, Dictionary<string, JsonElement> data)
     {
         MerchantInventory? inventory = null;
 
         if (player.RunState.CurrentRoom is MerchantRoom merchantRoom)
         {
-            // Regular merchant - auto-open inventory if needed
             var merchUI = NMerchantRoom.Instance;
-            if (merchUI?.Inventory != null && !merchUI.Inventory.IsOpen)
-                merchUI.OpenInventory();
+            if (merchUI?.Inventory?.IsOpen != true)
+                return Error("Shop inventory is closed. Use shop_open before purchasing.");
             // v0.107 split the merchant into per-player inventories; take the local one.
             inventory = merchantRoom.GetLocalInventory();
         }
@@ -475,25 +531,11 @@ public static partial class McpMod
                  && eventRoom.CanonicalEvent is FakeMerchant
                  && (eventRoom.LocalMutableEvent ?? eventRoom.CanonicalEvent) is FakeMerchant fakeMerchant)
         {
-            // Fake merchant event - auto-open via button if needed
-            if (!fakeMerchant.StartedFight)
-            {
-                var uiRoom = NEventRoom.Instance;
-                if (uiRoom != null)
-                {
-                    var fmNode = FindFirst<NFakeMerchant>(uiRoom);
-                    if (fmNode != null)
-                    {
-                        var inventoryUI = FindFirst<NMerchantInventory>(fmNode);
-                        if (inventoryUI != null && !inventoryUI.IsOpen)
-                        {
-                            var btn = fmNode.MerchantButton;
-                            if (btn != null && btn.Visible && btn.IsEnabled)
-                                btn.ForceClick();
-                        }
-                    }
-                }
-            }
+            var uiRoom = NEventRoom.Instance;
+            var fmNode = uiRoom == null ? null : FindFirst<NFakeMerchant>(uiRoom);
+            var inventoryUI = fmNode == null ? null : FindFirst<NMerchantInventory>(fmNode);
+            if (inventoryUI?.IsOpen != true)
+                return Error("Fake merchant inventory is closed. Use shop_open before purchasing.");
             inventory = fakeMerchant.Inventory;
         }
         else

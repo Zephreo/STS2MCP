@@ -529,11 +529,25 @@ async def rest_choose_option(option_index: int) -> str:
 
 
 @mcp.tool()
+async def shop_open_inventory() -> str:
+    """[Shop / Fake Merchant] Open the shop inventory.
+
+    State queries never open shop UI. Call this before purchasing after any
+    out-of-combat potion actions that require the inventory to remain closed.
+    """
+    try:
+        return await _post({"action": "shop_open"})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
 async def shop_purchase(item_index: int) -> str:
     """[Shop / Fake Merchant] Purchase an item from the shop.
 
     Works for both regular shops (state_type: shop) and the fake merchant
-    event (state_type: fake_merchant). The fake merchant only sells relics.
+    event (state_type: fake_merchant). Call shop_open_inventory first. The fake
+    merchant only sells relics.
 
     Args:
         item_index: 0-based index of the item from the shop state.
@@ -911,10 +925,19 @@ async def mp_rest_choose_option(option_index: int) -> str:
 
 
 @mcp.tool()
+async def mp_shop_open_inventory() -> str:
+    """[Multiplayer Shop] Open the local player's shop inventory."""
+    try:
+        return await _mp_post({"action": "shop_open"})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
 async def mp_shop_purchase(item_index: int) -> str:
     """[Multiplayer Shop] Purchase an item from the shop.
 
-    Per-player inventory — no voting needed.
+    Call mp_shop_open_inventory first. Per-player inventory — no voting needed.
 
     Args:
         item_index: 0-based index of the item.

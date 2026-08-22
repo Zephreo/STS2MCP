@@ -876,12 +876,14 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
 
 ### `shop` — Shop
 
-Shop inventory is auto-opened when state is queried.
+State queries do not open the inventory. Use `shop_open` when ready to buy;
+this permits out-of-combat actions such as throwing Foul Potion first.
 
 ```jsonc
 {
   "state_type": "shop",
   "shop": {
+    "inventory_open": false,
     "items": [
       // Card entry
       {
@@ -943,7 +945,9 @@ Shop inventory is auto-opened when state is queried.
 
 ### `fake_merchant` — Fake Merchant Event
 
-A relic-only shop disguised as an event. Uses `shop_purchase` and `proceed` actions (same as regular shop). If the player triggers a fight, the merchant disappears.
+A relic-only shop disguised as an event. Uses `shop_open`, `shop_purchase`, and
+`proceed` actions (same as a regular shop). If the player triggers a fight, the
+merchant disappears.
 
 ```jsonc
 {
@@ -953,6 +957,7 @@ A relic-only shop disguised as an event. Uses `shop_purchase` and `proceed` acti
     "event_name": "Fake Merchant",
     "started_fight": false,         // true after triggering the foul potion fight
     "shop": {
+      "inventory_open": false,
       "items": [
         {
           "index": 0,
@@ -978,7 +983,7 @@ A relic-only shop disguised as an event. Uses `shop_purchase` and `proceed` acti
 }
 ```
 
-**Note:** The fake merchant only sells relics — no cards, potions, or card removal. The `shop_purchase` action works the same as for a regular shop.
+**Note:** The fake merchant only sells relics — no cards, potions, or card removal. Its shop actions work the same as for a regular shop.
 
 ### `treasure` — Treasure Room
 
@@ -1625,9 +1630,20 @@ Choose a rest site option (rest, smith, etc.).
 |---|---|---|---|
 | `index` | int | Yes | 0-based index matching the option's `index` from state (disabled options return an error) |
 
+### `shop_open`
+
+Open a regular or fake merchant inventory. Game-state queries do not open it
+automatically.
+
+```json
+{ "action": "shop_open" }
+```
+
+**Errors:** Not in shop, inventory UI not ready, inventory cannot be opened.
+
 ### `shop_purchase`
 
-Purchase a shop item.
+Purchase a shop item. The inventory must already be open via `shop_open`.
 
 ```json
 { "action": "shop_purchase", "index": 0 }
@@ -1637,7 +1653,7 @@ Purchase a shop item.
 |---|---|---|---|
 | `index` | int | Yes | 0-based index in the flat items list |
 
-**Errors:** Not in shop, item sold out, not enough gold, inventory not ready.
+**Errors:** Not in shop, inventory closed, item sold out, not enough gold, inventory not ready.
 
 ### `choose_map_node`
 

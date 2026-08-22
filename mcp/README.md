@@ -24,6 +24,7 @@
 | `rewards_skip_card()` | Rewards | Skip the card reward |
 | `map_choose_node(node_index)` | Map | Choose a map node to travel to |
 | `rest_choose_option(option_index)` | Rest Site | Choose a rest site option (rest, smith, etc.) |
+| `shop_open_inventory()` | Shop | Open a regular or fake merchant's inventory |
 | `shop_purchase(item_index)` | Shop | Purchase an item from the shop |
 | `event_choose_option(option_index)` | Event | Choose an event option (including Proceed) |
 | `event_advance_dialogue()` | Event | Advance ancient event dialogue |
@@ -67,6 +68,7 @@ All multiplayer tools are prefixed with `mp_`. They route through `/api/v1/multi
 | `mp_event_choose_option(option_index)` | Event | Vote for / choose an event option |
 | `mp_event_advance_dialogue()` | Event | Advance ancient event dialogue |
 | `mp_rest_choose_option(option_index)` | Rest Site | Choose a rest site option (per-player, no vote) |
+| `mp_shop_open_inventory()` | Shop | Open the local player's shop inventory |
 | `mp_shop_purchase(item_index)` | Shop | Purchase an item (per-player inventory) |
 | `mp_rewards_claim(reward_index)` | Rewards | Claim a post-combat reward |
 | `mp_rewards_pick_card(card_index)` | Rewards | Select a card from the card reward screen |
