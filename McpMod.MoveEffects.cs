@@ -78,7 +78,9 @@ public static partial class McpMod
             // cache is keyed only by type and move id.  Dropping the table when
             // the combat changes serves fresh numbers instead of the previous
             // fight's.
-            object? scope = monster.CombatState;
+            object? scope;
+            try { scope = monster.CombatState; }
+            catch { scope = null; }
             if (!ReferenceEquals(scope, _moveFxScope))
             {
                 _moveFxCache.Clear();
