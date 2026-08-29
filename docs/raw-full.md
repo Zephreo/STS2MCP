@@ -840,6 +840,7 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
         "is_proceed": false,
         "was_chosen": false,
         "is_enabled": true,                  // false while a choice is executing or a transition is resolving
+        "relic_id": "RELIC_ID",             // Only if option has a relic
         "relic_name": "Relic Name",         // Only if option has a relic
         "relic_description": "Relic desc.",  // Only if option has a relic
         "keywords": [ /* Keyword Objects */ ]

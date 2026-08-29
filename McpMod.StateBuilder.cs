@@ -2461,6 +2461,7 @@ public static partial class McpMod
                     };
                     if (opt.Relic != null)
                     {
+                        optData["relic_id"] = opt.Relic.Id.Entry;
                         optData["relic_name"] = SafeGetText(() => opt.Relic.Title);
                         optData["relic_description"] = SafeGetText(() => opt.Relic.DynamicDescription);
                     }
