@@ -2804,17 +2804,22 @@ public static partial class McpMod
         // Third reason for an empty next_options: an act change is still
         // resolving behind this map. See GetTravelableMapPoints.
         state["transition_in_flight"] = IsRunTransitionInFlight();
+        state["drawing_coordinate_space"] = BuildMapDrawingCoordinateSpace();
+
+        // Map-point layout includes per-run jitter. Expose the live visual
+        // anchors in the same normalized coordinate space accepted by map_draw.
+        var drawingNodePositions = BuildMapDrawingNodePositions(mapScreen);
 
         // Full map - all nodes organized for planning
         var nodes = new List<Dictionary<string, object?>>();
 
         // Starting point
         var start = map.StartingMapPoint;
-        nodes.Add(BuildMapNode(start));
+        nodes.Add(BuildMapNode(start, drawingNodePositions));
 
         // Grid nodes
         foreach (var pt in map.GetAllMapPoints())
-            nodes.Add(BuildMapNode(pt));
+            nodes.Add(BuildMapNode(pt, drawingNodePositions));
 
         // Boss identity comes from the live act's EncounterModel — BossEncounter
         // throws if the act hasn't finished setup yet, so guard the access.
@@ -2824,7 +2829,7 @@ public static partial class McpMod
 
         var primaryBossId = bossEncounter?.Id?.Entry;
         var primaryBossName = SafeGetText(() => bossEncounter?.Title);
-        var bossNode = BuildMapNode(map.BossMapPoint);
+        var bossNode = BuildMapNode(map.BossMapPoint, drawingNodePositions);
         AddBossIdentity(bossNode, primaryBossId, primaryBossName);
         nodes.Add(bossNode);
 
@@ -2833,7 +2838,7 @@ public static partial class McpMod
         {
             var secondBossId = secondBossEncounter?.Id?.Entry;
             var secondBossName = SafeGetText(() => secondBossEncounter?.Title);
-            var secondBossNode = BuildMapNode(map.SecondBossMapPoint);
+            var secondBossNode = BuildMapNode(map.SecondBossMapPoint, drawingNodePositions);
             AddBossIdentity(secondBossNode, secondBossId, secondBossName);
             nodes.Add(secondBossNode);
             secondBoss = BuildBossInfo(map.SecondBossMapPoint, secondBossId, secondBossName);
@@ -2870,9 +2875,11 @@ public static partial class McpMod
             target["name"] = bossName;
     }
 
-    private static Dictionary<string, object?> BuildMapNode(MapPoint pt)
+    private static Dictionary<string, object?> BuildMapNode(
+        MapPoint pt,
+        IReadOnlyDictionary<(int col, int row), Vector2>? drawingNodePositions = null)
     {
-        return new Dictionary<string, object?>
+        var node = new Dictionary<string, object?>
         {
             ["col"] = pt.coord.col,
             ["row"] = pt.coord.row,
@@ -2882,6 +2889,9 @@ public static partial class McpMod
                 .Select(c => new List<int> { c.coord.col, c.coord.row })
                 .ToList()
         };
+        if (drawingNodePositions?.TryGetValue((pt.coord.col, pt.coord.row), out var drawPosition) == true)
+            node["draw_position"] = BuildMapDrawingPoint(drawPosition);
+        return node;
     }
 
     private static FieldInfo? _rewardsSetField;

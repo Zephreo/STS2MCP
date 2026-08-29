@@ -7,6 +7,7 @@ HTTP API served by the STS2_MCP mod on `localhost:15526`. No authentication. Loc
 - `POST /api/v1/singleplayer` — perform a game action
 - `GET  /api/v1/multiplayer` — read multiplayer game state
 - `POST /api/v1/multiplayer` — perform a multiplayer action
+- `GET  /api/v1/mapdrawings` — read saved map strokes and live node anchors
 - `GET  /api/v1/profile` — read current profile progress
 - `GET  /api/v1/compendium` — read Compendium-shaped profile progress
 - `GET  /api/v1/wiki` — fuzzy-search discovered card/relic wiki entries
@@ -788,10 +789,18 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
     "travel_enabled": true,      // false while the current room is unfinished
     "travel_in_flight": false,   // true between picking a node and the room loading
     "transition_in_flight": false, // true while an act change is still resolving behind this map
+    "drawing_coordinate_space": {
+      "name": "map_normalized",
+      "x_min": -3, "x_max": 3,
+      "y_min": -2, "y_max": 2
+    },
     "nodes": [                   // Full map DAG
       {
         "col": 3, "row": 0,
         "type": "Start",
+        // Live visual anchor after the map's per-run random jitter. Accepted
+        // directly as an x/y point by map_draw.
+        "draw_position": { "x": -0.08, "y": 0.83 },
         "children": [ [2, 1], [3, 1], [4, 1] ]  // [col, row] pairs
       }
     ],
@@ -809,6 +818,9 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
   "player": { ... }
 }
 ```
+
+Existing drawing strokes are intentionally not included in game state. Read
+them from the dedicated `GET /api/v1/mapdrawings` endpoint.
 
 ### `event` — Event / Ancient Encounter
 
@@ -1207,6 +1219,49 @@ Prevents soft-locks when an unrecognized overlay is active.
   "player": { ... }
 }
 ```
+
+---
+
+## Map Drawings
+
+### `GET /api/v1/mapdrawings`
+
+Returns saved drawing/eraser polylines through a dedicated endpoint. Drawing
+data is never embedded in the normal singleplayer or multiplayer state payload.
+The endpoint works for either run mode and also reports live node anchors.
+
+```jsonc
+{
+  "status": "ok",
+  "coordinate_space": {
+    "name": "map_normalized",
+    "x_min": -3, "x_max": 3,
+    "y_min": -2, "y_max": 2,
+    "description": "Resolution-independent coordinates used by the game's saved and multiplayer map drawings"
+  },
+  "nodes": [
+    { "col": 2, "row": 3, "position": { "x": -0.18, "y": 0.63 } }
+  ],
+  "players": [
+    {
+      "player_id": "76561198000000000",
+      "is_local": true,
+      "lines": [
+        {
+          "mode": "draw",
+          "points": [
+            { "x": -0.18, "y": 0.63 },
+            { "x": 0.02, "y": 0.51 }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+The node positions reflect the current live map's random visual jitter and use
+the same coordinate space accepted by `map_draw`.
 
 ---
 
@@ -1676,6 +1731,42 @@ vote lands on top of the one still resolving, and travelling during an act
 change kills the tween `RunManager.EnterAct` is awaiting, which strands its
 loading handles and disables every later event choice for the session. Both are
 rejected rather than forwarded — wait for the flags to clear.
+
+### `map_draw`
+
+Add one or more drawing or eraser strokes to the open map. This calls the
+game's native map-drawing methods, so strokes are saved with the run and are
+broadcast to multiplayer peers.
+
+```json
+{
+  "action": "map_draw",
+  "strokes": [
+    {
+      "mode": "draw",
+      "points": [
+        { "col": 2, "row": 3 },
+        { "col": 3, "row": 4 },
+        { "x": 0.12, "y": 0.41 }
+      ]
+    }
+  ]
+}
+```
+
+Each point is either a normalized `{x,y}` coordinate or a live map-node
+reference `{col,row}`. Node references resolve through the jittered live UI,
+not an approximation from grid coordinates. `mode` is `draw` or `erase` and
+defaults to `draw`. A request is limited to 64 strokes and 2,048 total points.
+
+### `map_clear_drawings`
+
+Clear only the local player's map drawings. In multiplayer, the clear is
+broadcast using the game's reliable clear message.
+
+```json
+{ "action": "map_clear_drawings" }
+```
 
 ### `select_card`
 

@@ -43,6 +43,10 @@ def _profiles_url() -> str:
     return f"{_base_url}/api/v1/profiles"
 
 
+def _map_drawings_url() -> str:
+    return f"{_base_url}/api/v1/mapdrawings"
+
+
 def _get_client() -> httpx.AsyncClient:
     global _http
     if _http is None:
@@ -103,6 +107,12 @@ async def _profiles_get() -> str:
 
 async def _profiles_post(body: dict) -> str:
     r = await _get_client().post(_profiles_url(), json=body)
+    r.raise_for_status()
+    return r.text
+
+
+async def _map_drawings_get() -> str:
+    r = await _get_client().get(_map_drawings_url())
     r.raise_for_status()
     return r.text
 
@@ -493,6 +503,20 @@ async def rewards_skip_card() -> str:
 
 
 @mcp.tool()
+async def get_map_drawings() -> str:
+    """Get saved map drawing strokes and live map-node drawing positions.
+
+    This uses the dedicated /api/v1/mapdrawings endpoint; drawing data is not
+    included in the normal game-state response. Coordinates use the game's
+    resolution-independent map_normalized space.
+    """
+    try:
+        return await _map_drawings_get()
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
 async def map_choose_node(node_index: int) -> str:
     """[Map] Choose a map node to travel to.
 
@@ -501,6 +525,33 @@ async def map_choose_node(node_index: int) -> str:
     """
     try:
         return await _post({"action": "choose_map_node", "index": node_index})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def map_draw(strokes: list[dict]) -> str:
+    """[Map] Draw or erase one or more programmatic strokes on the open map.
+
+    Each stroke is {"mode": "draw"|"erase", "points": [...]}. A point may
+    be a normalized coordinate {"x": number, "y": number} or a live map-node
+    reference {"col": int, "row": int}. Node anchors are included as
+    draw_position on map.nodes and by get_map_drawings().
+
+    Args:
+        strokes: Up to 64 strokes and 2048 total points.
+    """
+    try:
+        return await _post({"action": "map_draw", "strokes": strokes})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def map_clear_drawings() -> str:
+    """[Map] Clear all map drawing strokes belonging to the local player."""
+    try:
+        return await _post({"action": "map_clear_drawings"})
     except Exception as e:
         return _handle_error(e)
 
@@ -880,6 +931,31 @@ async def mp_map_vote(node_index: int) -> str:
     """
     try:
         return await _mp_post({"action": "choose_map_node", "index": node_index})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def mp_map_draw(strokes: list[dict]) -> str:
+    """[Multiplayer Map] Draw or erase strokes and broadcast them to peers.
+
+    Uses the same stroke schema and normalized/node coordinates as map_draw.
+    Existing local and remote strokes can be read with get_map_drawings().
+
+    Args:
+        strokes: Up to 64 strokes and 2048 total points.
+    """
+    try:
+        return await _mp_post({"action": "map_draw", "strokes": strokes})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def mp_map_clear_drawings() -> str:
+    """[Multiplayer Map] Clear local strokes and broadcast the clear to peers."""
+    try:
+        return await _mp_post({"action": "map_clear_drawings"})
     except Exception as e:
         return _handle_error(e)
 

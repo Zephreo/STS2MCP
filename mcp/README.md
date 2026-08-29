@@ -22,7 +22,10 @@
 | `rewards_claim(reward_index)` | Rewards | Claim a reward from the post-combat screen |
 | `rewards_pick_card(card_index)` | Rewards | Select a card from the card reward screen |
 | `rewards_skip_card()` | Rewards | Skip the card reward |
+| `get_map_drawings()` | Map | Read strokes and live node drawing positions from the dedicated endpoint |
 | `map_choose_node(node_index)` | Map | Choose a map node to travel to |
+| `map_draw(strokes)` | Map | Draw/erase normalized polylines or paths through map-node references |
+| `map_clear_drawings()` | Map | Clear the local player's map drawings |
 | `rest_choose_option(option_index)` | Rest Site | Choose a rest site option (rest, smith, etc.) |
 | `shop_open_inventory()` | Shop | Open a regular or fake merchant's inventory |
 | `shop_purchase(item_index)` | Shop | Purchase an item from the shop |
@@ -65,6 +68,8 @@ All multiplayer tools are prefixed with `mp_`. They route through `/api/v1/multi
 | `mp_discard_potion(slot)` | General | Discard a potion from the local player's slots |
 | `mp_proceed_to_map()` | General | Proceed from current screen to the map |
 | `mp_map_vote(node_index)` | Map | Vote for a map node (travel when all agree) |
+| `mp_map_draw(strokes)` | Map | Draw/erase strokes and broadcast them to peers |
+| `mp_map_clear_drawings()` | Map | Clear local drawings and broadcast the clear |
 | `mp_event_choose_option(option_index)` | Event | Vote for / choose an event option |
 | `mp_event_advance_dialogue()` | Event | Advance ancient event dialogue |
 | `mp_rest_choose_option(option_index)` | Rest Site | Choose a rest site option (per-player, no vote) |

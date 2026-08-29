@@ -66,6 +66,8 @@ public static partial class McpMod
             "discard_potion" => ExecuteDiscardPotion(player, data),
             "end_turn" => ExecuteEndTurn(player),
             "choose_map_node" => ExecuteChooseMapNode(data),
+            "map_draw" => ExecuteMapDraw(data),
+            "map_clear_drawings" => ExecuteMapClearDrawings(),
             "choose_event_option" => ExecuteChooseEventOption(data),
             "advance_dialogue" => ExecuteAdvanceDialogue(),
             "choose_rest_option" => ExecuteChooseRestOption(data),

@@ -6,6 +6,7 @@ HTTP API on `localhost:15526`. No authentication.
 - `POST /api/v1/singleplayer` — perform action
 - `GET /api/v1/multiplayer` — read multiplayer state
 - `POST /api/v1/multiplayer` — perform multiplayer action
+- `GET /api/v1/mapdrawings` — read saved map strokes and live node anchors
 - `GET /api/v1/profile` — read current profile progress
 - `GET /api/v1/compendium` — read Compendium-shaped profile progress
 - `GET /api/v1/wiki` — fuzzy-search discovered card/relic wiki entries
@@ -37,7 +38,7 @@ Every JSON response includes:
 | `hand_select` | In-combat card selection (exhaust, discard, upgrade) | `combat_select_card`, `combat_confirm_selection` |
 | `rewards` | Rewards screen (post-combat or event-triggered) | `claim_reward`, `proceed` |
 | `card_reward` | Pick a card to add to deck | `select_card_reward`, `skip_card_reward` |
-| `map` | Map navigation | `choose_map_node` |
+| `map` | Map navigation and annotation | `choose_map_node`, `map_draw`, `map_clear_drawings` |
 | `event` | Event or Ancient encounter | `choose_event_option`, `advance_dialogue` |
 | `rest_site` | Rest site | `choose_rest_option`, `proceed` |
 | `shop` | Shop | `shop_open`, `shop_purchase`, `proceed` |
@@ -172,9 +173,17 @@ rewards..."` (no `battle`) is the corresponding tail end.
 
 `map.point_history` lists the current act's visited points with the rooms they resolved into — the only place a `?` reports what it actually became. The top-level `act` block carries the act's pre-rolled encounter and event queues with their consumed counters, so a client can name the fight or event behind any map node; `run.visited_event_ids` and `profile.number_of_runs` are the extra inputs needed to replay the game's event skip and its first-run `?` override.
 
+Every entry in `map.nodes` includes a live `draw_position` in the documented
+`map.drawing_coordinate_space`. These positions include the map's random visual
+jitter. Existing strokes are deliberately excluded from game state; use
+`GET /api/v1/mapdrawings`, which returns strokes grouped by player plus the same
+live node anchors.
+
 | Action | Parameters | When to Use |
 |---|---|---|
 | `choose_map_node` | `index`: int | Travel to a node from `next_options`. Empty (and rejected) while the current room is unfinished or a travel is already resolving — see `map.travel_enabled` / `map.travel_in_flight`. |
+| `map_draw` | `strokes`: array | Add native drawing/eraser polylines. Points may be normalized `{x,y}` values or live node references `{col,row}`. Saved and broadcast in multiplayer. |
+| `map_clear_drawings` | _(none)_ | Clear only the local player's drawings; broadcast reliably in multiplayer. |
 
 ### Event (`event`)
 

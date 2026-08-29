@@ -348,6 +348,13 @@ public static partial class McpMod
                 else
                     SendError(response, 405, "Method not allowed");
             }
+            else if (path == "/api/v1/mapdrawings")
+            {
+                if (request.HttpMethod == "GET")
+                    HandleGetMapDrawings(response);
+                else
+                    SendError(response, 405, "Method not allowed");
+            }
             else
             {
                 SendError(response, 404, "Not found");
