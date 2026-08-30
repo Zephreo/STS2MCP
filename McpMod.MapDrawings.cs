@@ -253,11 +253,6 @@ public static partial class McpMod
         return new Vector2(point.X * 960f + drawings.Size.X * 0.5f, point.Y * drawings.Size.Y);
     }
 
-    private static Vector2 ToMapDrawingPosition(NMapDrawings drawings, Vector2 point)
-    {
-        return new Vector2((point.X - drawings.Size.X * 0.5f) / 960f, point.Y / drawings.Size.Y);
-    }
-
     private static Dictionary<(int col, int row), Vector2> BuildMapDrawingNodePositions(NMapScreen? mapScreen)
     {
         var positions = new Dictionary<(int col, int row), Vector2>();
@@ -265,7 +260,6 @@ public static partial class McpMod
         if (mapScreen == null || drawings == null || drawings.Size.Y == 0f)
             return positions;
 
-        var drawingsInverse = drawings.GetGlobalTransform().Inverse();
         foreach (var node in FindAll<NMapPoint>(mapScreen))
         {
             if (node.Point == null)
@@ -273,10 +267,14 @@ public static partial class McpMod
 
             // NMapScreen.GetLineEndpoint uses the origin for normal points and
             // the visual centre for the larger starting/boss point controls.
+            // Its map conversion deliberately uses GetGlobalTransformWithCanvas:
+            // the canvas transform carries the live map-scroll displacement.
+            // GetGlobalTransform alone omits that displacement and produces a
+            // stroke offset from every node after the map has scrolled.
             var localAnchor = node is NNormalMapPoint ? Vector2.Zero : node.Size * 0.5f;
-            var globalAnchor = node.GetGlobalTransform() * localAnchor;
-            var drawingLocal = drawingsInverse * globalAnchor;
-            positions[(node.Point.coord.col, node.Point.coord.row)] = ToMapDrawingPosition(drawings, drawingLocal);
+            var screenAnchor = node.GetGlobalTransformWithCanvas() * localAnchor;
+            positions[(node.Point.coord.col, node.Point.coord.row)] =
+                mapScreen.GetNetPositionFromScreenPosition(screenAnchor);
         }
         return positions;
     }

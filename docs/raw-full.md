@@ -72,6 +72,8 @@ Every response (except `menu`) includes these top-level fields alongside the sta
       // run.visited_event_ids, since doing it here would mutate run state.
       "events": ["SAPPHIRE_SEED", "WELLSPRING"],
       "events_visited": 0,
+      "boss": "THE_KIN_BOSS",
+      "second_boss": null, // Present only when the act has a second boss
       "boss_visited": 0
     }
   },
@@ -1266,8 +1268,9 @@ The endpoint works for either run mode and also reports live node anchors.
 }
 ```
 
-The node positions reflect the current live map's random visual jitter and use
-the same coordinate space accepted by `map_draw`.
+The node positions reflect the current live map's random visual jitter and
+canvas scroll transform. They use the game's native map-network coordinate
+space accepted by `map_draw`.
 
 ---
 

@@ -1837,6 +1837,26 @@ public static partial class McpMod
             if (normal == null || elite == null || events == null)
                 return null;
 
+            EncounterModel? bossEncounter = null;
+            try { bossEncounter = act.BossEncounter; } catch { }
+            var secondBossEncounter = act.SecondBossEncounter;
+            var encounters = new Dictionary<string, object?>
+            {
+                ["normal"] = normal,
+                ["normal_visited"] = Visited("normalEncountersVisited"),
+                ["elite"] = elite,
+                ["elite_visited"] = Visited("eliteEncountersVisited"),
+                ["events"] = events,
+                ["events_visited"] = Visited("eventsVisited"),
+                ["boss_visited"] = Visited("bossEncountersVisited")
+            };
+            var bossId = bossEncounter?.Id?.Entry;
+            var secondBossId = secondBossEncounter?.Id?.Entry;
+            if (!string.IsNullOrWhiteSpace(bossId))
+                encounters["boss"] = bossId;
+            if (!string.IsNullOrWhiteSpace(secondBossId))
+                encounters["second_boss"] = secondBossId;
+
             bool isMultiplayer = runState.Players.Count > 1;
             return new Dictionary<string, object?>
             {
@@ -1844,16 +1864,7 @@ public static partial class McpMod
                 ["id"] = act.Id.Entry,
                 ["rooms_total"] = act.GetNumberOfRooms(isMultiplayer),
                 ["floors_total"] = act.GetNumberOfFloors(isMultiplayer),
-                ["encounters"] = new Dictionary<string, object?>
-                {
-                    ["normal"] = normal,
-                    ["normal_visited"] = Visited("normalEncountersVisited"),
-                    ["elite"] = elite,
-                    ["elite_visited"] = Visited("eliteEncountersVisited"),
-                    ["events"] = events,
-                    ["events_visited"] = Visited("eventsVisited"),
-                    ["boss_visited"] = Visited("bossEncountersVisited")
-                }
+                ["encounters"] = encounters
             };
         }
         catch
