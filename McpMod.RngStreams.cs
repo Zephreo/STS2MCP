@@ -433,7 +433,11 @@ public static partial class McpMod
             players.Add(entry);
         }
 
-        return new Dictionary<string, object?> { ["players"] = players };
+        return new Dictionary<string, object?>
+        {
+            ["relic_bag_generation"] = RelicBagGeneration,
+            ["players"] = players,
+        };
     }
 
     /// <summary>

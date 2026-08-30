@@ -30,7 +30,7 @@ namespace STS2_MCP;
 
 public static partial class McpMod
 {
-    private static Dictionary<string, object?> BuildMultiplayerGameState()
+    private static Dictionary<string, object?> BuildMultiplayerGameState(bool fullDetail = false)
     {
         var result = new Dictionary<string, object?>();
         var tree = Engine.GetMainLoop() as SceneTree;
@@ -295,7 +295,10 @@ public static partial class McpMod
         catch { }
 
         // All players summary (always included for multiplayer)
-        result["players"] = BuildAllPlayersState(runState);
+        // Only the top-level roster follows `detail=full`. Room-local `players`
+        // arrays remain compact summaries so a response never duplicates every
+        // teammate's master deck, relics, and potions.
+        result["players"] = BuildAllPlayersState(runState, fullDetail);
 
         // Always include full local player data (relics, potions, deck, etc.) on every screen,
         // matching singleplayer behavior from BuildGameState()
@@ -712,7 +715,7 @@ public static partial class McpMod
         return state;
     }
 
-    private static List<Dictionary<string, object?>> BuildAllPlayersState(RunState runState)
+    private static List<Dictionary<string, object?>> BuildAllPlayersState(RunState runState, bool fullDetail = false)
     {
         bool inCombat = CombatManager.Instance.IsInProgress;
         var players = new List<Dictionary<string, object?>>();
@@ -724,6 +727,9 @@ public static partial class McpMod
                 // Stable target id for ally/player-targeting cards and potions
                 // (play_card / use_potion 'target' parameter).
                 ["entity_id"] = $"player_{i}",
+                ["slot_index"] = i,
+                ["net_id"] = player.NetId.ToString(),
+                ["character_id"] = player.Character.Id.Entry,
                 ["character"] = SafeGetText(() => player.Character.Title),
                 ["is_local"] = LocalContext.IsMe(player),
                 ["hp"] = player.Creature.CurrentHp,
@@ -737,6 +743,9 @@ public static partial class McpMod
             var playerRng = BuildPlayerRngStreams(player);
             if (playerRng != null)
                 entry["rng"] = playerRng;
+
+            if (fullDetail)
+                AddFullRunPlayerDetail(entry, player);
 
             if (inCombat)
             {
@@ -813,5 +822,33 @@ public static partial class McpMod
             players.Add(entry);
         }
         return players;
+    }
+
+    /// <summary>Adds the complete, non-combat player state requested by
+    /// <c>detail=full</c>. Relic grab-bag contents deliberately stay on
+    /// <c>/api/v1/relicbag</c>; joining the endpoints only needs the top-level
+    /// constant-time generation value.</summary>
+    private static void AddFullRunPlayerDetail(Dictionary<string, object?> entry, Player player)
+    {
+        try
+        {
+            var deck = new List<Dictionary<string, object?>>();
+            int deckIndex = 0;
+            foreach (var card in player.Deck.Cards)
+            {
+                var info = BuildCardInfo(card);
+                info["index"] = deckIndex++;
+                deck.Add(info);
+            }
+            entry["deck"] = deck;
+        }
+        catch
+        {
+            entry["detail_incomplete"] = "master deck unavailable";
+        }
+
+        entry["status"] = BuildPowersState(player.Creature);
+        entry["relics"] = BuildRelicsList(player);
+        AddPotionsState(entry, player);
     }
 }

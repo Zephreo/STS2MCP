@@ -19,7 +19,7 @@ namespace STS2_MCP;
 [ModInitializer("Initialize")]
 public static partial class McpMod
 {
-    public const string Version = "0.5.5";
+    public const string Version = "0.5.6";
     public const int DefaultPort = 15526;
     private const string ConfigFileName = "STS2_MCP.conf";
 
@@ -386,12 +386,22 @@ public static partial class McpMod
     private static void HandleGetMultiplayerState(HttpListenerRequest request, HttpListenerResponse response)
     {
         string format = request.QueryString["format"] ?? "json";
+        string detail = request.QueryString["detail"] ?? "summary";
+        if (detail is not ("summary" or "full"))
+        {
+            SendError(response, 400, "detail must be either 'summary' or 'full'.");
+            return;
+        }
+        bool fullDetail = detail == "full";
 
         try
         {
             var stateTask = RunOnMainThread(() =>
             {
-                var s = BuildMultiplayerGameState();
+                var s = BuildMultiplayerGameState(fullDetail);
+                s["detail"] = detail;
+                if (fullDetail)
+                    s["relic_bag_generation"] = RelicBagGeneration;
                 s["game_version"] = GameVersion();
                 return s;
             });

@@ -23,9 +23,15 @@ The endpoints are mutually exclusive: calling singleplayer during a multiplayer 
 
 ### Query Parameters
 
-| Parameter | Values             | Default | Description     |
-|-----------|--------------------|---------|-----------------|
-| `format`  | `json`, `markdown` | `json`  | Response format |
+| Parameter | Values             | Default   | Description     |
+|-----------|--------------------|-----------|-----------------|
+| `format`  | `json`, `markdown` | `json`    | Response format |
+| `detail`  | `summary`, `full`  | `summary` | Multiplayer only. `full` adds every player's master deck, relics, potions, status, stable IDs, and player RNG to the top-level `players`; unknown values return HTTP 400. |
+
+`detail=full` is opt-in so ordinary multiplayer polling keeps the compact
+response and its existing latency. Room-local `map.players`, `event.players`,
+and `treasure.players` arrays remain summaries even in a full response; only
+the top-level `players` array expands.
 
 ### Common Top-Level Fields
 
@@ -1909,6 +1915,7 @@ Finish the Crystal Sphere minigame.
 ```jsonc
 {
   "game_mode": "multiplayer",
+  "detail": "summary",        // `full` when requested
   "net_type": "SteamMultiplayer",
   "player_count": 2,
   "local_player_slot": 0,      // Index of local player in players array
@@ -1944,6 +1951,49 @@ Finish the Crystal Sphere minigame.
   ]
 }
 ```
+
+With `detail=full`, every top-level player additionally carries their stable
+`slot_index`, string `net_id`, locale-independent `character_id`, complete
+master `deck`, `relics` (including counters/runtime state), `potions`,
+`max_potion_slots`, persistent `status`, and player-scoped `rng`. The response
+also carries `relic_bag_generation`, a process-monotonic integer read in
+constant time. Relic deque contents are deliberately not included here.
+
+Fetch those separately from `GET /api/v1/relicbag`. That response carries the
+same `relic_bag_generation`; join players by `slot_index` and retry when the two
+generation values differ. The counter advances whenever any player's bag is
+populated, loaded, pruned, refreshed, pulled from, explicitly removed from, or
+moved into the multiplayer fallback deque. It detects bag drift between the two
+requests without hashing or traversing bags on the main multiplayer endpoint.
+
+### Relic Grab Bags
+
+`GET /api/v1/relicbag` remains the sole exporter of each player's ordered relic
+deques:
+
+```jsonc
+{
+  "relic_bag_generation": 42,
+  "players": [
+    {
+      "net_id": 123456789,
+      "slot_index": 0,
+      "is_me": true,
+      "deques": {
+        "common": ["AKABEKO", "ANCHOR"],
+        "uncommon": [],
+        "rare": [],
+        "shop": [],
+        "mp_fallback": []
+      }
+    }
+  ]
+}
+```
+
+Reward sources pull from the front, merchants pull from the back, and declined
+relics have already left the lists. Never sort or cache these deques across
+rooms.
 
 ### Battle State Additions
 
