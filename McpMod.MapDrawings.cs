@@ -53,7 +53,9 @@ public static partial class McpMod
                 lines.Add(new Dictionary<string, object?>
                 {
                     ["mode"] = line.isEraser ? "erase" : "draw",
-                    ["points"] = line.mapPoints.Select(BuildMapDrawingPoint).ToList()
+                    ["points"] = line.mapPoints
+                        .Select(point => BuildMapDrawingPoint(DecodeSerializedMapDrawingPosition(drawings.Size, point)))
+                        .ToList()
                 });
             }
 
@@ -141,10 +143,10 @@ public static partial class McpMod
             bool began = false;
             try
             {
-                drawings.BeginLineLocal(FromMapDrawingPosition(drawings, stroke.Points[0]), stroke.Mode);
+                drawings.BeginLineLocal(FromMapDrawingPosition(drawings.Size, stroke.Points[0]), stroke.Mode);
                 began = true;
                 foreach (var point in stroke.Points.Skip(1))
-                    drawings.UpdateCurrentLinePositionLocal(FromMapDrawingPosition(drawings, point));
+                    drawings.UpdateCurrentLinePositionLocal(FromMapDrawingPosition(drawings.Size, point));
             }
             finally
             {
@@ -248,11 +250,6 @@ public static partial class McpMod
         return float.IsFinite(value);
     }
 
-    private static Vector2 FromMapDrawingPosition(NMapDrawings drawings, Vector2 point)
-    {
-        return new Vector2(point.X * 960f + drawings.Size.X * 0.5f, point.Y * drawings.Size.Y);
-    }
-
     private static Dictionary<(int col, int row), Vector2> BuildMapDrawingNodePositions(NMapScreen? mapScreen)
     {
         var positions = new Dictionary<(int col, int row), Vector2>();
@@ -265,16 +262,21 @@ public static partial class McpMod
             if (node.Point == null)
                 continue;
 
-            // NMapScreen.GetLineEndpoint uses the origin for normal points and
-            // the visual centre for the larger starting/boss point controls.
-            // Its map conversion deliberately uses GetGlobalTransformWithCanvas:
-            // the canvas transform carries the live map-scroll displacement.
-            // GetGlobalTransform alone omits that displacement and produces a
-            // stroke offset from every node after the map has scrolled.
-            var localAnchor = node is NNormalMapPoint ? Vector2.Zero : node.Size * 0.5f;
-            var screenAnchor = node.GetGlobalTransformWithCanvas() * localAnchor;
+            // A map point Control's origin is its top-left corner; drawings
+            // should cross the visible icon at the centre of every point.
+            // NMapScreen.GetLineEndpoint's normal-point Position is already in
+            // the parent map container's coordinate space and must not be
+            // mistaken for this Control's local drawing anchor.
+            // Follow NMouseHeldMapDrawingInput/NMouseModeMapDrawingInput exactly:
+            // they transform the global pointer through the drawing control's
+            // inverse global transform before calling BeginLineLocal. Keeping
+            // this in drawing-local space avoids mixing the map background's
+            // canvas transform and dimensions with the drawing surface.
+            var localAnchor = GetMapDrawingNodeAnchor(node.Size);
+            var globalAnchor = node.GetGlobalTransform() * localAnchor;
+            var drawingLocalAnchor = drawings.GetGlobalTransform().Inverse() * globalAnchor;
             positions[(node.Point.coord.col, node.Point.coord.row)] =
-                mapScreen.GetNetPositionFromScreenPosition(screenAnchor);
+                ToMapDrawingPosition(drawings.Size, drawingLocalAnchor);
         }
         return positions;
     }
