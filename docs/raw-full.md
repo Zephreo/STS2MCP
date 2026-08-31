@@ -27,11 +27,52 @@ The endpoints are mutually exclusive: calling singleplayer during a multiplayer 
 |-----------|--------------------|-----------|-----------------|
 | `format`  | `json`, `markdown` | `json`    | Response format |
 | `detail`  | `summary`, `full`  | `summary` | Multiplayer only. `full` adds every player's master deck, relics, potions, status, stable IDs, and player RNG to the top-level `players`; unknown values return HTTP 400. |
+| `values`  | `powered`, `unpowered` | `powered` | Whether card descriptions and enemy intent labels arrive with the player's standing powers and relics baked into their numbers; unknown values return HTTP 400. |
 
 `detail=full` is opt-in so ordinary multiplayer polling keeps the compact
 response and its existing latency. Room-local `map.players`, `event.players`,
 and `treasure.players` arrays remain summaries even in a full response; only
 the top-level `players` array expands.
+
+### Powered vs unpowered values
+
+The game renders a card's description through its damage/block pipeline, so a
+live card's printed numbers already carry the player's standing Strength,
+Dexterity, Vigor, Focus and Weak plus every additive relic bonus. Enemy intent
+`label` strings are baked the same way, and additionally carry target Vulnerable
+and the Back Attack x1.5 multiplier. A consumer that then applies those
+modifiers itself double-counts them.
+
+`values=unpowered` renders the numbers at **base + enchantment** instead:
+
+- Each card gains `"text_baked": false`. The key is absent in `powered` mode, so
+  an existing consumer sees a byte-identical payload by default.
+- Each enemy intent whose label was actually rebuilt gains `"unbaked": true`. If
+  the label could not be rebuilt the game's own powered label is kept and the
+  marker is **not** emitted, so the flag never over-promises.
+- The response echoes `"values"` at the top level.
+
+An enchantment counts as part of the card, exactly as the game treats it, so
+enchanted values stay applied in both modes.
+
+Unaffected by this parameter, because none of it comes from the description's
+value pipeline:
+
+- `keywords` / `keyword_ids`, including single-turn Retain and Sly grants and
+  keywords a relic or upgrade adds or removes (a relic that strips Exhaust still
+  strips it).
+- The enchantment and affliction text lines, and the replay-count line.
+- `cost` / `star_cost`, which stay hook-modified: a relic that makes a card free
+  still reports `0`.
+- Orb `passive_val` / `evoke_val`, which bake Focus inside the orb model rather
+  than through a hook.
+- Intent `title` / `description` hover text, which still carries the powered
+  damage number in its wording.
+
+`values=unpowered` also makes non-hand piles deterministic. A card's value set is
+shared UI state that only the card node writes, so in `powered` mode a draw-pile,
+shop or reward card reports whatever the last on-screen render happened to leave
+there. The unpowered path sets the values explicitly before rendering.
 
 ### Common Top-Level Fields
 

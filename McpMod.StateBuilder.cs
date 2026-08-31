@@ -11,6 +11,7 @@ using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.HoverTips;
+using MegaCrit.Sts2.Core.Localization;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.Potions;
 using MegaCrit.Sts2.Core.Models;
@@ -2097,6 +2098,11 @@ public static partial class McpMod
             // reliably; this is what a client tests for Sly/Ethereal/Retain.
             ["keyword_ids"] = BuildKeywordIds(card)
         };
+        // Only present, and only false, when this build stripped the game's power
+        // and relic baking out of the numbers above. A powered payload omits the key
+        // entirely, which is the shape every existing consumer already assumes.
+        if (UnpoweredValues)
+            info["text_baked"] = false;
         if (card is MadScience madScience)
         {
             info["mad_science_type"] = madScience.TinkerTimeType.ToString();
@@ -2315,6 +2321,39 @@ public static partial class McpMod
         }
     }
 
+    // AbstractIntent.IntentLabelFormat is protected, so reach it once by reflection
+    // and cache it. There is no public unpowered label renderer to call instead.
+    private static readonly PropertyInfo? _intentLabelFormat =
+        typeof(AbstractIntent).GetProperty(
+            "IntentLabelFormat",
+            BindingFlags.Instance
+                | BindingFlags.NonPublic
+                | BindingFlags.Public);
+
+    /// <summary>
+    /// Reproduces SingleAttackIntent.GetIntentLabel / MultiAttackIntent.GetIntentLabel
+    /// against the raw DamageCalc, i.e. without the Hook.ModifyDamage pass those go
+    /// through. Returns null when the label cannot be rebuilt, in which case the
+    /// caller keeps the game's own (powered) label and does NOT claim it is unbaked -
+    /// a wrong claim is worse for a consumer than a baked number it expects.
+    /// </summary>
+    private static string? UnpoweredAttackLabel(AttackIntent attack)
+    {
+        try
+        {
+            var calc = attack.DamageCalc;
+            if (calc == null || _intentLabelFormat == null)
+                return null;
+            if (_intentLabelFormat.GetValue(attack) is not LocString format)
+                return null;
+
+            format.Add("Damage", Math.Max(0, (int)calc()));
+            format.Add("Repeat", attack.Repeats);
+            return format.GetFormattedText();
+        }
+        catch { return null; }
+    }
+
     private static List<Dictionary<string, object?>> BuildIntentList(
         IEnumerable<AbstractIntent> moveIntents, Creature creature)
     {
@@ -2353,7 +2392,18 @@ public static partial class McpMod
                 var targets = creature.CombatState?.PlayerCreatures;
                 if (targets != null)
                 {
-                    string label = intent.GetIntentLabel(targets, creature).GetFormattedText();
+                    // AttackIntent.GetSingleDamage runs the label's number through
+                    // Hook.ModifyDamage, which bakes in attacker Strength/Weak, target
+                    // Vulnerable and the Back Attack x1.5. In unpowered mode rebuild the
+                    // label from the raw DamageCalc instead. Nothing else bakes: the
+                    // Defend/Debuff/Buff labels carry no numbers at all.
+                    string? label = UnpoweredValues && intent is AttackIntent attack
+                        ? UnpoweredAttackLabel(attack)
+                        : null;
+                    if (label != null)
+                        intentData["unbaked"] = true;
+                    else
+                        label = intent.GetIntentLabel(targets, creature).GetFormattedText();
                     intentData["label"] = StripRichTextTags(label);
 
                     var hoverTip = intent.GetHoverTip(targets, creature);

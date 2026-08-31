@@ -19,7 +19,7 @@ namespace STS2_MCP;
 [ModInitializer("Initialize")]
 public static partial class McpMod
 {
-    public const string Version = "0.5.6";
+    public const string Version = "0.5.7";
     public const int DefaultPort = 15526;
     private const string ConfigFileName = "STS2_MCP.conf";
 
@@ -394,16 +394,33 @@ public static partial class McpMod
         }
         bool fullDetail = detail == "full";
 
+        // Card descriptions and enemy intent labels are rendered by the game with the
+        // player's standing powers and relics already applied. "unpowered" strips that
+        // baking back to base + enchantment; see UnpoweredCardVars in McpMod.Helpers.cs.
+        string values = request.QueryString["values"] ?? "powered";
+        if (values is not ("powered" or "unpowered"))
+        {
+            SendError(response, 400, "values must be either 'powered' or 'unpowered'.");
+            return;
+        }
+        bool unpowered = values == "unpowered";
+
         try
         {
             var stateTask = RunOnMainThread(() =>
             {
-                var s = BuildMultiplayerGameState(fullDetail);
-                s["detail"] = detail;
-                if (fullDetail)
-                    s["relic_bag_generation"] = RelicBagGeneration;
-                s["game_version"] = GameVersion();
-                return s;
+                UnpoweredValues = unpowered;
+                try
+                {
+                    var s = BuildMultiplayerGameState(fullDetail);
+                    s["detail"] = detail;
+                    if (fullDetail)
+                        s["relic_bag_generation"] = RelicBagGeneration;
+                    s["game_version"] = GameVersion();
+                    s["values"] = values;
+                    return s;
+                }
+                finally { UnpoweredValues = false; }
             });
             var state = stateTask.GetAwaiter().GetResult();
 
@@ -496,13 +513,30 @@ public static partial class McpMod
     {
         string format = request.QueryString["format"] ?? "json";
 
+        // Card descriptions and enemy intent labels are rendered by the game with the
+        // player's standing powers and relics already applied. "unpowered" strips that
+        // baking back to base + enchantment; see UnpoweredCardVars in McpMod.Helpers.cs.
+        string values = request.QueryString["values"] ?? "powered";
+        if (values is not ("powered" or "unpowered"))
+        {
+            SendError(response, 400, "values must be either 'powered' or 'unpowered'.");
+            return;
+        }
+        bool unpowered = values == "unpowered";
+
         try
         {
             var stateTask = RunOnMainThread(() =>
             {
-                var s = BuildGameState();
-                s["game_version"] = GameVersion();
-                return s;
+                UnpoweredValues = unpowered;
+                try
+                {
+                    var s = BuildGameState();
+                    s["game_version"] = GameVersion();
+                    s["values"] = values;
+                    return s;
+                }
+                finally { UnpoweredValues = false; }
             });
             var state = stateTask.GetAwaiter().GetResult();
 

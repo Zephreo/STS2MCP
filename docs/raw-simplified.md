@@ -22,6 +22,9 @@ Singleplayer and multiplayer endpoints are mutually exclusive (HTTP 409 if misma
 |-----------|--------------------|-----------|-----------------|
 | `format`  | `json`, `markdown` | `json`    | Response format |
 | `detail`  | `summary`, `full`  | `summary` | Multiplayer only. `full` expands the top-level player roster with every player's master deck, relics, potions, status, stable IDs, and player RNG. |
+| `values`  | `powered`, `unpowered` | `powered` | Whether card descriptions and enemy intent labels arrive with the player's standing powers and relics baked into their numbers; unknown values return HTTP 400. |
+
+`values=unpowered` strips the player's standing powers and relics back out of card descriptions and enemy intent labels, leaving base + enchantment, and marks each card `"text_baked": false` and each rebuilt intent `"unbaked": true`. Keywords (including relic-removed Exhaust), enchantment text, energy cost and orb values are identical in both modes. See raw-full.md for the full contract.
 
 ## GET — State Types
 

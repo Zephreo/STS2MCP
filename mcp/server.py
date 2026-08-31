@@ -169,7 +169,7 @@ def _handle_error(e: Exception) -> str:
 
 
 @mcp.tool()
-async def get_game_state(format: str = "markdown") -> str:
+async def get_game_state(format: str = "markdown", values: str = "powered") -> str:
     """Get the current Slay the Spire 2 game state.
 
     Returns the full game state including player stats, hand, enemies, potions, etc.
@@ -178,9 +178,16 @@ async def get_game_state(format: str = "markdown") -> str:
 
     Args:
         format: "markdown" for human-readable output, "json" for structured data.
+        values: "powered" (default) renders card descriptions and enemy intent
+            labels the way the game does, with the player's standing Strength,
+            Dexterity, Vigor, Focus, Weak and relic bonuses already applied to the
+            numbers. "unpowered" strips that back to the card's own base value plus
+            its enchantment, and marks each card `text_baked: false` and each
+            rebuilt intent `unbaked: true`. Keywords, enchantment text and energy
+            cost are identical either way.
     """
     try:
-        return await _get({"format": format})
+        return await _get({"format": format, "values": values})
     except Exception as e:
         return _handle_error(e)
 
@@ -826,7 +833,7 @@ async def crystal_sphere_proceed() -> str:
 
 
 @mcp.tool()
-async def mp_get_game_state(format: str = "markdown") -> str:
+async def mp_get_game_state(format: str = "markdown", values: str = "powered") -> str:
     """[Multiplayer] Get the current multiplayer game state.
 
     Returns a summary of all players (HP, gold, alive status) plus full
@@ -836,9 +843,16 @@ async def mp_get_game_state(format: str = "markdown") -> str:
 
     Args:
         format: "markdown" for human-readable output, "json" for structured data.
+        values: "powered" (default) renders card descriptions and enemy intent
+            labels the way the game does, with the player's standing Strength,
+            Dexterity, Vigor, Focus, Weak and relic bonuses already applied to the
+            numbers. "unpowered" strips that back to the card's own base value plus
+            its enchantment, and marks each card `text_baked: false` and each
+            rebuilt intent `unbaked: true`. Keywords, enchantment text and energy
+            cost are identical either way.
     """
     try:
-        return await _mp_get({"format": format})
+        return await _mp_get({"format": format, "values": values})
     except Exception as e:
         return _handle_error(e)
 
