@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -456,6 +456,43 @@ public static partial class McpMod
                     ["amount"] = 1,
                 };
                 break;
+
+            case ("Axebot", "BOOT_UP_MOVE"):
+            {
+                // The scan reads neither half of this move. Its Block amount is
+                // `CreatureCmd.GainBlock(base.Creature, BootUpBlock, Move, null)`
+                // and its buff is
+                // `PowerCmd.Apply<StrengthPower>(.., BootUpStrGain * (2 - StockAmount), ..)`
+                // - arithmetic over live monster state, which the amount tracker
+                // reports as null by design. So the move exported nothing at all,
+                // and every consumer saw an Axebot that telegraphed Defend and
+                // Buff and then did neither: seven live divergences, each missing
+                // exactly 10 Block and 3 or 6 Strength.
+                //
+                // Both inputs are ordinary int design props, read the same way
+                // `model_stats` already reads them. `StockAmount` is fixed for a
+                // creature's lifetime - `StockPower.AfterDeath` gives the
+                // REPLACEMENT `base.Amount - 1` - so the multiplier is 1 for the
+                // encounter's Axebot and 2 for the one that takes its place.
+                int? bootBlock = ReadMonsterInt(monster, "BootUpBlock");
+                if (bootBlock != null)
+                    fx["block"] = bootBlock;
+                int? strengthGain = ReadMonsterInt(monster, "BootUpStrGain");
+                int? stock = ReadMonsterInt(monster, "StockAmount");
+                if (strengthGain != null && stock != null)
+                {
+                    fx["applies"] = new List<Dictionary<string, object?>>
+                    {
+                        new()
+                        {
+                            ["power"] = "StrengthPower",
+                            ["target"] = "self",
+                            ["amount"] = strengthGain.Value * (2 - stock.Value),
+                        },
+                    };
+                }
+                break;
+            }
 
             case ("Entomancer", "PHEROMONE_SPIT_MOVE"):
                 // A linear scan sees both arms. The source chooses one from the

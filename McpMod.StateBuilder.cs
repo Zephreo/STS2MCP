@@ -1561,7 +1561,19 @@ public static partial class McpMod
         var localCreature = LocalContext.GetMe(runState)?.Creature;
         foreach (var creature in combatState.Enemies)
         {
-            if (creature.IsAlive)
+            // A dead creature the fight is KEEPING is still part of the fight.
+            // `CreatureCmd.Kill` only calls `RemoveCreature` when
+            // `Hook.ShouldCreatureBeRemovedFromCombatAfterDeath` agrees, and
+            // IllusionPower, AdaptablePower and DieForYouPower all veto it for
+            // their own owner - so a killed Parafright sits at 0 HP in
+            // `Enemies` until its REVIVE_MOVE heals it back to full. Filtering
+            // on `IsAlive` alone hid it completely, and a consumer that never
+            // saw the corpse could not predict the creature that came back:
+            // six live divergences where an Obscura's illusion reappeared out
+            // of nowhere. `is_alive` distinguishes it from the living ones, and
+            // the ordinary death window is unaffected because a normal corpse
+            // is removed rather than retained.
+            if (creature.IsAlive || CombatRetainsDeadCreature(combatState, creature))
             {
                 enemies.Add(BuildEnemyState(creature, entityCounts, localCreature));
             }
@@ -2225,6 +2237,28 @@ public static partial class McpMod
         return list;
     }
 
+    /// <summary>Whether the fight is keeping a dead creature on the board.</summary>
+    /// <remarks>
+    /// `CreatureCmd.Kill` removes a dead creature from `ICombatState.Enemies`
+    /// only when every hook listener agrees, and three powers veto it for their
+    /// own owner: IllusionPower (which then heals the creature back to full on
+    /// its own REVIVE_MOVE), AdaptablePower and DieForYouPower. Asking the same
+    /// hook is what separates such a creature from an ordinary corpse still
+    /// playing its death animation, which IS removed a moment later and must
+    /// stay out of the export.
+    /// </remarks>
+    private static bool CombatRetainsDeadCreature(ICombatState combatState, Creature creature)
+    {
+        try
+        {
+            return !Hook.ShouldCreatureBeRemovedFromCombatAfterDeath(combatState, creature);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static Dictionary<string, object?> BuildEnemyState(
         Creature creature,
         Dictionary<string, int> entityCounts,
@@ -2250,6 +2284,11 @@ public static partial class McpMod
             ["hp"] = creature.CurrentHp,
             ["max_hp"] = creature.MaxHp,
             ["hp_infinite"] = creature.HpDisplay.IsInfinite(),
+            // False only for a corpse the fight is holding on to (see the
+            // enemy loop in BuildBattleState). Every other exported creature is
+            // alive, so a client that ignores this reads exactly what it read
+            // before.
+            ["is_alive"] = creature.IsAlive,
             ["block"] = creature.Block,
             ["status"] = BuildPowersState(creature)
         };
