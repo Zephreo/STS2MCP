@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Hooks;
@@ -455,18 +456,36 @@ public static partial class McpMod
             result["state_type"] = "relic_select";
             result["relic_select"] = BuildRelicSelectState(relicSelectScreen, runState);
         }
-        else if (!mapIsOpen && topOverlay is NCrystalSphereScreen crystalSphereScreen)
+        else if (topOverlay is NCrystalSphereScreen crystalSphereScreen
+                 && (!mapIsOpen || CrystalSphereIsOutstanding(crystalSphereScreen)))
         {
             // Mirror the NRewardsScreen guard below: the Crystal Sphere overlay
             // lingers on the stack after proceed is clicked (only ClearScreens
             // on the next room transition pops it). Once the map opens on top,
             // report "map" so state matches the screen the player can interact
             // with. See issue #73.
+            //
+            // ...but only once it HAS been answered. `CrystalSphere.UncoverFuture`
+            // awaits `PlayMinigame()` before `SetEventFinished`, so a sphere still
+            // being played blocks its event room, and masking it reported an
+            // un-travellable map with nothing on it - the same deadlock Brain
+            // Leech's card reward and Tiny Mailbox's potions produced.
             result["state_type"] = "crystal_sphere";
             result["crystal_sphere"] = BuildCrystalSphereState(crystalSphereScreen, runState);
         }
-        else if (!mapIsOpen && topOverlay is NCardRewardSelectionScreen cardRewardScreen)
+        else if (topOverlay is NCardRewardSelectionScreen cardRewardScreen
+                 && (!mapIsOpen || CardRewardIsOutstanding(cardRewardScreen)))
         {
+            // The map deference here is only correct for a card reward that has
+            // already been answered - it lingers on the overlay stack while the
+            // map opens underneath. A pick the run is still WAITING on must win
+            // over the map, exactly as `RewardsSetIsOutstanding` makes it for a
+            // rewards set: Brain Leech's RIP awaits `RewardsCmd.OfferCustom`
+            // before `SetEventFinished`, so masking this screen reported an
+            // un-travellable "map" (`travel_enabled: false`, no `next_options`,
+            // because the room is unfinished) with nothing a client could act
+            // on. Observed live at act 1 floor 14: `[STALL] map unchanged` with
+            // "No map options" for the rest of the run.
             result["state_type"] = "card_reward";
             result["card_reward"] = BuildCardRewardState(cardRewardScreen);
         }
@@ -621,6 +640,7 @@ public static partial class McpMod
         {
             result["state_type"] = "map";
             result["map"] = BuildMapState(runState);
+            AddBlockedMapDiagnostics(result, currentRoom, topOverlay);
         }
         else if (currentRoom is CombatRoom combatRoom)
         {
@@ -2969,6 +2989,9 @@ public static partial class McpMod
     }
 
     private static FieldInfo? _rewardsSetField;
+    private static FieldInfo? _crystalSphereEntityField;
+    private static FieldInfo? _crystalSphereCompletionField;
+    private static FieldInfo? _cardRewardCompletionField;
     private static FieldInfo? _rewardsIsTerminalField;
 
     /// <summary>
@@ -3014,6 +3037,114 @@ public static partial class McpMod
             if (_rewardsSetField?.GetValue(screen) is not RewardsSet set)
                 return false;
             return !RunManager.Instance.RewardsSetSynchronizer.IsRewardsSetCompleted(set);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Names what is blocking a map that cannot be travelled.
+    /// </summary>
+    /// <remarks>
+    /// The map fallback is the only branch reachable while the run is provably
+    /// stuck, and it had no guard of its own: every "is this screen actionable"
+    /// test above it is per-screen, so a screen nobody thought to guard falls
+    /// through to a map with `travel_enabled: false` and no `next_options` -
+    /// which is honest about the map and says nothing about the room that is
+    /// still awaiting an answer. Three separate stalls reached the client that
+    /// way (Tiny Mailbox's potions, Brain Leech's card reward, and the Crystal
+    /// Sphere), each costing an investigation to attribute.
+    ///
+    /// This does not fix the masking - only the missing per-screen guard can -
+    /// but it turns the next occurrence from a silent hang into a state that
+    /// names the room and the overlay responsible. An empty `next_options` with
+    /// nothing in flight means `GetTravelableMapPoints` found nothing because
+    /// the current room is unfinished, so anything here is a real blocker.
+    /// </remarks>
+    private static void AddBlockedMapDiagnostics(
+        Dictionary<string, object?> result,
+        AbstractRoom? currentRoom,
+        object? topOverlay)
+    {
+        try
+        {
+            if (result["map"] is not Dictionary<string, object?> map)
+                return;
+            if (map["travel_enabled"] is not false)
+                return;
+            if (map["travel_in_flight"] is true || map["transition_in_flight"] is true)
+                return;
+
+            map["blocked"] = true;
+            map["blocked_room"] = currentRoom?.GetType().Name;
+            map["blocked_overlay"] = topOverlay?.GetType().Name;
+            map["blocked_reason"] =
+                "The map is not travelable and nothing is in flight, so the current room has not "
+                + "finished. Some screen it is awaiting is not being reported; `blocked_overlay` "
+                + "names the overlay on top, if any.";
+        }
+        catch
+        {
+            // Diagnostics must never be able to break a state read.
+        }
+    }
+
+    /// <summary>
+    /// Whether a Crystal Sphere minigame is still being played.
+    /// </summary>
+    /// <remarks>
+    /// The third of the "answered yet?" checks, and the same rule as the other
+    /// two: `CrystalSphere.UncoverFuture` and `PaymentPlan` both await
+    /// `PlayMinigame()` before `SetEventFinished`, and that await IS the
+    /// minigame's own `_completionSource`. The screen holds the minigame in
+    /// `_entity`, so the signal is two private fields down; any reflection
+    /// failure answers false and leaves the mask as it behaved before.
+    /// </remarks>
+    private static bool CrystalSphereIsOutstanding(NCrystalSphereScreen screen)
+    {
+        try
+        {
+            _crystalSphereEntityField ??= typeof(NCrystalSphereScreen)
+                .GetField("_entity", BindingFlags.NonPublic | BindingFlags.Instance);
+            var minigame = _crystalSphereEntityField?.GetValue(screen);
+            if (minigame == null)
+                return false;
+            _crystalSphereCompletionField ??= minigame.GetType()
+                .GetField("_completionSource", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (_crystalSphereCompletionField?.GetValue(minigame) is not TaskCompletionSource completion)
+                return false;
+            return !completion.Task.IsCompleted;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Whether a card reward screen is still waiting for the run to pick.
+    /// </summary>
+    /// <remarks>
+    /// The twin of <see cref="RewardsSetIsOutstanding" />, and it exists for the
+    /// same reason: the screen lingers on the overlay stack after it is answered,
+    /// so the map is allowed to win THEN - but a pick the run is blocked on must
+    /// win over the map, or the state reports a map that cannot be travelled.
+    ///
+    /// `_completionSource` is the await the screen resolves: non-null and
+    /// incomplete means nobody has chosen yet. Any reflection failure answers
+    /// false, which leaves the mask exactly as it behaved before.
+    /// </remarks>
+    private static bool CardRewardIsOutstanding(NCardRewardSelectionScreen screen)
+    {
+        try
+        {
+            _cardRewardCompletionField ??= typeof(NCardRewardSelectionScreen)
+                .GetField("_completionSource", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (_cardRewardCompletionField?.GetValue(screen) is not TaskCompletionSource<int?> completion)
+                return false;
+            return !completion.Task.IsCompleted;
         }
         catch
         {
@@ -3114,6 +3245,13 @@ public static partial class McpMod
 
         // Cards in the grid (sorted by visual position - MoveToFront can reorder children)
         var cardHolders = FindAllSortedByPosition<NGridCardHolder>(screen);
+        // Which cards the screen already holds selected. `select_card` TOGGLES a
+        // holder, so a client that cannot see this cannot converge on a
+        // multi-pick screen: re-sending a pick turns it back off. Every grid
+        // selection screen keeps its own private set; nothing public exposes it,
+        // which is why the game's own AutoSlay handler tracks a local list
+        // instead. Read it so a client can see its own progress.
+        var selectedCards = SelectedCardModels(screen);
         var cards = new List<Dictionary<string, object?>>();
         int index = 0;
         foreach (var holder in cardHolders)
@@ -3123,16 +3261,26 @@ public static partial class McpMod
 
             var cardInfo = BuildCardInfo(card);
             cardInfo["index"] = index;
+            cardInfo["is_selected"] = selectedCards?.Contains(card) ?? false;
             cards.Add(cardInfo);
             index++;
         }
         state["cards"] = cards;
+        if (selectedCards != null)
+            state["selected_count"] = selectedCards.Count;
         AddCardSelectionContext(state);
 
         // Preview container showing? (selection complete, awaiting confirm)
         // Upgrade screens use UpgradeSinglePreviewContainer / UpgradeMultiPreviewContainer
-        var previewSingle = screen.GetNodeOrNull<Godot.Control>("%UpgradeSinglePreviewContainer");
-        var previewMulti = screen.GetNodeOrNull<Godot.Control>("%UpgradeMultiPreviewContainer");
+        // NDeckEnchantSelectScreen names its own pair `%Enchant*PreviewContainer`
+        // (`_enchantSinglePreviewContainer` / `_enchantMultiPreviewContainer`),
+        // so a build that looked only for the Upgrade and generic names reported
+        // `preview_showing: false` on every enchant screen - and with it the
+        // preview's Confirm and Cancel buttons, which live inside that container.
+        var previewSingle = screen.GetNodeOrNull<Godot.Control>("%UpgradeSinglePreviewContainer")
+                            ?? screen.GetNodeOrNull<Godot.Control>("%EnchantSinglePreviewContainer");
+        var previewMulti = screen.GetNodeOrNull<Godot.Control>("%UpgradeMultiPreviewContainer")
+                           ?? screen.GetNodeOrNull<Godot.Control>("%EnchantMultiPreviewContainer");
         var previewGeneric = screen.GetNodeOrNull<Godot.Control>("%PreviewContainer");
         bool previewShowing = (previewSingle?.Visible ?? false)
                             || (previewMulti?.Visible ?? false)
@@ -3196,6 +3344,41 @@ public static partial class McpMod
         state["can_confirm"] = canConfirm;
 
         return state;
+    }
+
+    /// <summary>
+    /// The cards a grid selection screen currently holds selected, or null when
+    /// the screen keeps no such set.
+    /// </summary>
+    /// <remarks>
+    /// Every `NCardGridSelectionScreen` subclass that allows more than one pick
+    /// keeps its own `private readonly HashSet&lt;CardModel&gt; _selectedCards`
+    /// (see `NDeckEnchantSelectScreen`), and nothing public exposes it — the
+    /// game's own AutoSlay handlers track a local list rather than read it. A
+    /// client needs it because `select_card` TOGGLES a holder: without knowing
+    /// what is already selected it cannot converge on a screen that wants three
+    /// picks, since re-sending one turns it back off.
+    ///
+    /// The field name is matched rather than the declaring type, so a new screen
+    /// with the same shape is covered without another entry here. A screen that
+    /// has no such field answers null, which is reported as no selection rather
+    /// than as an empty one.
+    /// </remarks>
+    private static HashSet<CardModel>? SelectedCardModels(object screen)
+    {
+        try
+        {
+            var field = screen.GetType().GetField(
+                "_selectedCards",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            return field?.GetValue(screen) as HashSet<CardModel>;
+        }
+        catch (Exception)
+        {
+            // Reflection into game internals is best-effort: a renamed or
+            // retyped field must degrade to "unknown", never break the state.
+            return null;
+        }
     }
 
     private static Dictionary<string, object?> BuildChooseCardState(NChooseACardSelectionScreen screen, RunState runState)
