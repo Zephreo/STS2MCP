@@ -34,10 +34,10 @@ public static partial class McpMod
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    // The game's own release version ("0.108.2"), from the release_info.json shipped next to the
-    // executable. Fixed for the process, so it is read once — and only from the main thread (the
-    // manager is a lazily-constructed singleton that touches Godot file IO). Null when the build
-    // ships without a release_info.json, in which case the key is omitted from the state.
+    // The game's own release version, from the release_info.json shipped next to the executable.
+    // Fixed for the process, so it is read once — and only from the main thread (the manager is a
+    // lazily-constructed singleton that touches Godot file IO). Null when the build ships without
+    // a release_info.json, in which case the key is omitted from the state.
     private static string? _gameVersion;
     private static bool _gameVersionRead;
 
