@@ -9,7 +9,7 @@ HTTP API on `localhost:15526`. No authentication.
 - `GET /api/v1/mapdrawings` — read saved map strokes and live node anchors
 - `GET /api/v1/profile` — read current profile progress
 - `GET /api/v1/compendium` — read Compendium-shaped profile progress
-- `GET /api/v1/wiki` — fuzzy-search discovered card/relic wiki entries
+- `GET /api/v1/wiki` — fuzzy-search, or list, card/relic wiki entries
 - `GET /api/v1/cardpools` — every unlocked card pool in roll order (static per run)
 - `GET /api/v1/profiles` — list profile slots
 - `POST /api/v1/profiles` — switch or delete profile slots
@@ -86,12 +86,13 @@ When a run is active, the response includes `current_run.run_id` in `{save_scope
 
 Run history is resolved from the active Steam account's profile save root. `current_run.run_id` identifies one concrete attempt; `seed` identifies generated run content and can repeat across attempts.
 
-`GET /api/v1/wiki?query=<text>&item_type=<all|card|relic>&limit=<n>` returns a bounded fuzzy-search result over the active profile's discovered cards and relics. `query` is required because this endpoint is intentionally selective and does not dump the full catalog. `item_type` defaults to `all`, and `limit` defaults to 10 with an internal maximum. Card results include both `base` and `upgraded` objects when the card can be upgraded.
+`GET /api/v1/wiki?query=<text>&item_type=<all|card|relic>&limit=<n>&scope=<discovered|all>` searches or lists card and relic entries. With a `query` it fuzzy-ranks matches; with no query it LISTS everything in scope in name order (a higher internal limit applies). `item_type` defaults to `all`; `limit` defaults to 10 when searching and to the whole list otherwise. `scope` defaults to `discovered` (the active profile's own progress); `scope=all` covers every card and relic the game defines and is for tooling — a card catalog needs it, because an undiscovered card still has a fully resolved description. Card results include both `base` and `upgraded` objects when the card can be upgraded.
 
 Example searches:
 
 - `/api/v1/wiki?query=ironclad%20perfect%20strike&item_type=card`
 - `/api/v1/wiki?query=silver%20spoon&item_type=relic&limit=5`
+- `/api/v1/wiki?scope=all&item_type=card` (whole card list, discovery gate off)
 
 `GET /api/v1/cardpools` returns every unlocked card pool (all five characters plus the shared Colorless, Curse, Deprecated, Event, Quest, Status and Token pools), each card carrying `id`, `name`, `type`, `rarity`, its own `pool` and `can_be_generated_in_combat`. Added in 0.5.0, replacing the five per-state `combat_*_pool` fields. **Card order is load-bearing** — the game's `Rng.NextItem` indexes straight into these lists — so never sort them. The payload is static for a run but not across runs (multiplayer unlock state is the union over all players), so fetch it at each run start.
 

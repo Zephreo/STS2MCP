@@ -10,7 +10,7 @@ HTTP API served by the STS2_MCP mod on `localhost:15526`. No authentication. Loc
 - `GET  /api/v1/mapdrawings` — read saved map strokes and live node anchors
 - `GET  /api/v1/profile` — read current profile progress
 - `GET  /api/v1/compendium` — read Compendium-shaped profile progress
-- `GET  /api/v1/wiki` — fuzzy-search discovered card/relic wiki entries
+- `GET  /api/v1/wiki` — fuzzy-search, or list, card/relic wiki entries
 - `GET  /api/v1/cardpools` — every unlocked card pool in roll order (static per run)
 - `GET  /api/v1/profiles` — list profile slots
 - `POST /api/v1/profiles` — switch or delete profile slots
@@ -1377,15 +1377,24 @@ The response is built from `SaveManager.Progress`, the active profile's `progres
 
 ### `GET /api/v1/wiki`
 
-Searches wiki-style card and relic entries available to the active profile. The endpoint requires a query, filters to the profile's discovered card and relic IDs, fuzzy-ranks the matches, and returns a bounded result set. It does not expose the full game catalog.
+Searches or lists wiki-style card and relic entries. With a query the endpoint fuzzy-ranks the matches and returns a bounded result set; **with no query it lists everything in scope**, in name order, which is what a tool building a static catalog wants. By default both modes are filtered to the active profile's discovered card and relic IDs.
 
 Query parameters:
 
 | Parameter | Values | Default | Description |
 |---|---|---|---|
-| `query` or `q` | text | required | Fuzzy search text, such as `ironclad perfect strike` or `silver spoon`. |
+| `query` or `q` | text | *(none)* | Fuzzy search text, such as `ironclad perfect strike` or `silver spoon`. Omit it to list rather than search. |
 | `item_type` or `type` | `all`, `card`, `relic` | `all` | Restricts the search to one wiki kind. |
-| `limit` | integer | `10` | Maximum returned entries. The mod clamps values below 1 and above its internal maximum. |
+| `limit` | integer | `10` searching, whole list otherwise | Maximum returned entries. The mod clamps values below 1 and above its internal maximum, which is higher for a listing than for a search. |
+| `scope` | `discovered`, `all` | `discovered` | `all` ignores the profile's discovery progress and covers every card and relic the game defines. Tooling only — it spoils content the profile has not met. |
+
+The response carries `mode` (`search` or `list`), `scope`, `truncated` (the limit cut the result short), and a `counts` block.
+
+**`scope=all` is what a card catalog needs.** The discovery gate is a spoiler gate, not a data one: an undiscovered card still has a fully resolved description, and a tool that cannot see it writes a catalog entry with no text at all. Added in mod `0.4.0-fork.8`; an older DLL ignores the parameter and silently returns the discovered subset.
+
+```http
+GET /api/v1/wiki?scope=all&item_type=card
+```
 
 Card results include both `base` and `upgraded` variants when the card can be upgraded. The upgraded variant is built from a cloned preview, so the catalog model is not mutated.
 

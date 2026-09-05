@@ -90,11 +90,12 @@ async def _compendium_get() -> str:
     return r.text
 
 
-async def _wiki_get(query: str, item_type: str = "all", limit: int = 10) -> str:
-    r = await _get_client().get(
-        _wiki_url(),
-        params={"query": query, "item_type": item_type, "limit": limit},
-    )
+async def _wiki_get(query: str, item_type: str = "all", limit: int | None = None,
+                    scope: str = "discovered") -> str:
+    params: dict[str, object] = {"query": query, "item_type": item_type, "scope": scope}
+    if limit is not None:
+        params["limit"] = limit
+    r = await _get_client().get(_wiki_url(), params=params)
     r.raise_for_status()
     return r.text
 
@@ -256,22 +257,29 @@ async def get_compendium() -> str:
 
 
 @mcp.tool()
-async def search_wiki(query: str, item_type: str = "all", limit: int = 10) -> str:
-    """Search discovered card and relic wiki entries for the active profile.
+async def search_wiki(query: str = "", item_type: str = "all", limit: int | None = None,
+                      scope: str = "discovered") -> str:
+    """Search or list card and relic wiki entries.
 
-    Uses fuzzy matching over profile-unlocked content only, so agents can ask
-    for a card or relic by approximate name without receiving the entire game
-    catalog. Card results include both base and upgraded variants when the card
-    can be upgraded.
+    With a query this is a fuzzy search, so agents can ask for a card or relic
+    by approximate name. With no query it LISTS everything in scope, in name
+    order, which is what building a static catalog wants. Card results include
+    both base and upgraded variants when the card can be upgraded.
 
     Args:
         query: Search text such as "ironclad perfect strike" or "silver spoon".
+            Omit it to list rather than search.
         item_type: "all", "card", or "relic".
-        limit: Maximum results to return. Defaults to 10; the mod clamps it to
-            a bounded maximum.
+        limit: Maximum results. Defaults to 10 when searching and to the whole
+            list otherwise; the mod clamps it to a bounded maximum, which is
+            higher for a listing than for a search.
+        scope: "discovered" (the default) honours the active profile's
+            discovery progress; "all" ignores it and covers every card and
+            relic the game defines. Use "all" only for tooling -- it spoils
+            content the profile has not met.
     """
     try:
-        return await _wiki_get(query, item_type, limit)
+        return await _wiki_get(query, item_type, limit, scope)
     except Exception as e:
         return _handle_error(e)
 

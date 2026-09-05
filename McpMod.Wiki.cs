@@ -14,21 +14,23 @@ public static partial class McpMod
     private const int DefaultWikiSearchLimit = 10;
     private const int MaxWikiSearchLimit = 50;
 
+    // A listing is not a search: the 50-result search cap exists to keep a fuzzy
+    // query from dumping the catalog, and an explicit request for the whole list
+    // has already asked for that.  Building a static card catalog is the case
+    // this serves -- 543 fuzzy queries, one per card, was the alternative, and
+    // whatever never ranked in a query's top 50 was silently absent from it.
+    private const int MaxWikiListLimit = 5000;
+
     private static void HandleGetWiki(HttpListenerRequest request, HttpListenerResponse response)
     {
         var query = request.QueryString["query"] ?? request.QueryString["q"] ?? "";
         var itemType = request.QueryString["type"] ?? request.QueryString["item_type"] ?? "all";
-        var limit = ParseWikiLimit(request.QueryString["limit"]);
-
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            SendError(response, 400, "query is required; wiki search does not return the full profile catalog.");
-            return;
-        }
+        var scope = request.QueryString["scope"] ?? "discovered";
+        var limit = ParseWikiLimit(request.QueryString["limit"], string.IsNullOrWhiteSpace(query));
 
         try
         {
-            var dataTask = RunOnMainThread(() => BuildWikiSearch(query, itemType, limit));
+            var dataTask = RunOnMainThread(() => BuildWikiSearch(query, itemType, limit, scope));
             SendJson(response, dataTask.GetAwaiter().GetResult());
         }
         catch (Exception ex)
@@ -37,15 +39,32 @@ public static partial class McpMod
         }
     }
 
-    internal static object SearchWiki(string query, string itemType = "all", int? limit = null)
+    internal static object SearchWiki(string query = "", string itemType = "all", int? limit = null,
+        string scope = "discovered")
     {
-        if (string.IsNullOrWhiteSpace(query))
-            return Error("query is required; wiki search does not return the full profile catalog.");
-
-        return BuildWikiSearch(query, itemType, NormalizeWikiLimit(limit ?? DefaultWikiSearchLimit));
+        var listing = string.IsNullOrWhiteSpace(query);
+        var normalized = limit.HasValue
+            ? NormalizeWikiLimit(limit.Value, listing)
+            : (listing ? MaxWikiListLimit : DefaultWikiSearchLimit);
+        return BuildWikiSearch(query, itemType, normalized, scope);
     }
 
-    private static Dictionary<string, object?> BuildWikiSearch(string query, string itemType, int limit)
+    // "discovered" (the default) keeps the profile's own spoiler gate; "all"
+    // searches ModelDb outright.  A tool building a static catalog wants "all":
+    // a card the profile has not met still has a fully resolved description,
+    // and without it that card reaches a deck with no text at all.
+    private static string? NormalizeWikiScope(string scope)
+    {
+        return (scope ?? "").Trim().ToLowerInvariant() switch
+        {
+            "" or "discovered" => "discovered",
+            "all" => "all",
+            _ => null
+        };
+    }
+
+    private static Dictionary<string, object?> BuildWikiSearch(string query, string itemType, int limit,
+        string scope = "discovered")
     {
         var progress = SaveManager.Instance?.Progress;
         var saveManager = SaveManager.Instance;
@@ -55,6 +74,11 @@ public static partial class McpMod
         var normalizedItemType = NormalizeWikiItemType(itemType);
         if (normalizedItemType == null)
             return Error("item_type must be one of: all, card, relic.");
+
+        var normalizedScope = NormalizeWikiScope(scope);
+        if (normalizedScope == null)
+            return Error("scope must be one of: discovered, all.");
+        var everything = normalizedScope == "all";
 
         var discoveredCards = progress.DiscoveredCards
             .Select(id => id.Entry)
@@ -67,19 +91,31 @@ public static partial class McpMod
 
         var candidates = new List<WikiCandidate>();
         if (normalizedItemType is "all" or "card")
-            candidates.AddRange(BuildCardWikiCandidates(discoveredCards));
+            candidates.AddRange(BuildCardWikiCandidates(everything ? null : discoveredCards));
         if (normalizedItemType is "all" or "relic")
-            candidates.AddRange(BuildRelicWikiCandidates(discoveredRelics));
+            candidates.AddRange(BuildRelicWikiCandidates(everything ? null : discoveredRelics));
 
-        var matches = candidates
-            .Select(candidate => new
-            {
-                Candidate = candidate,
-                Score = ScoreWikiCandidate(query, candidate)
-            })
-            .Where(match => match.Score > 0)
-            .OrderByDescending(match => match.Score)
-            .ThenBy(match => match.Candidate.Name, StringComparer.OrdinalIgnoreCase)
+        // No query is a LISTING: every candidate in name order, unscored.  A
+        // fuzzy score would only impose an arbitrary order on an enumeration
+        // nobody searched, and dropping the `Score > 0` filter with it is the
+        // point -- that filter is what a listing must not have.
+        var listing = string.IsNullOrWhiteSpace(query);
+
+        // Counted before `Take`, so `truncated` says whether the limit actually
+        // cut anything.  It has to be the ELIGIBLE count, not `candidates`: a
+        // search's non-matching candidates are not results withheld.
+        var eligible = listing
+            ? candidates.OrderBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(candidate => (Candidate: candidate, Score: 0.0))
+                .ToList()
+            : candidates
+                .Select(candidate => (Candidate: candidate, Score: ScoreWikiCandidate(query, candidate)))
+                .Where(match => match.Score > 0)
+                .OrderByDescending(match => match.Score)
+                .ThenBy(match => match.Candidate.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+        var matches = eligible
             .Take(limit)
             .Select(match => BuildWikiResult(match.Candidate, match.Score))
             .ToList();
@@ -89,10 +125,18 @@ public static partial class McpMod
             ["status"] = "ok",
             ["profile_id"] = saveManager.CurrentProfileId,
             ["query"] = query,
+            ["mode"] = listing ? "list" : "search",
             ["item_type"] = normalizedItemType,
             ["limit"] = limit,
-            ["scope"] = "active_profile_discovered_cards_and_relics",
-            ["selection_policy"] = "Searches only cards and relics discovered by the active profile, then returns the best fuzzy matches instead of exposing the full catalog.",
+            ["truncated"] = eligible.Count > matches.Count,
+            ["scope"] = everything ? "all_cards_and_relics" : "active_profile_discovered_cards_and_relics",
+            ["selection_policy"] = (everything, listing) switch
+            {
+                (true, true) => "Lists every card and relic the game defines, in name order, ignoring the active profile's discovery progress.",
+                (true, false) => "Searches every card and relic the game defines, ignoring the active profile's discovery progress, then returns the best fuzzy matches.",
+                (false, true) => "Lists every card and relic discovered by the active profile, in name order.",
+                (false, false) => "Searches only cards and relics discovered by the active profile, then returns the best fuzzy matches instead of exposing the full catalog."
+            },
             ["counts"] = new Dictionary<string, object?>
             {
                 ["discovered_cards"] = discoveredCards.Count,
@@ -104,15 +148,15 @@ public static partial class McpMod
         };
     }
 
-    private static int ParseWikiLimit(string? rawLimit)
+    private static int ParseWikiLimit(string? rawLimit, bool listing = false)
     {
         if (!int.TryParse(rawLimit, out var limit))
-            return DefaultWikiSearchLimit;
-        return NormalizeWikiLimit(limit);
+            return listing ? MaxWikiListLimit : DefaultWikiSearchLimit;
+        return NormalizeWikiLimit(limit, listing);
     }
 
-    private static int NormalizeWikiLimit(int limit)
-        => Math.Clamp(limit, 1, MaxWikiSearchLimit);
+    private static int NormalizeWikiLimit(int limit, bool listing = false)
+        => Math.Clamp(limit, 1, listing ? MaxWikiListLimit : MaxWikiSearchLimit);
 
     private static string? NormalizeWikiItemType(string? itemType)
     {
@@ -132,13 +176,15 @@ public static partial class McpMod
     // ModelDb._contentById), so card.Id.Entry comes back empty and the
     // discoveredIds filter drops everything. ModelDb.AllCards also naturally
     // includes mod-injected cards.
-    private static IEnumerable<WikiCandidate> BuildCardWikiCandidates(HashSet<string> discoveredIds)
+    // A null `discoveredIds` means scope=all: every card ModelDb defines,
+    // whether or not the profile has met it.
+    private static IEnumerable<WikiCandidate> BuildCardWikiCandidates(HashSet<string>? discoveredIds)
     {
         var byId = new Dictionary<string, WikiCandidate>(StringComparer.OrdinalIgnoreCase);
         foreach (var card in ModelDb.AllCards)
         {
             var id = SafeGetText(() => card.Id.Entry);
-            if (string.IsNullOrWhiteSpace(id) || !discoveredIds.Contains(id))
+            if (string.IsNullOrWhiteSpace(id) || (discoveredIds != null && !discoveredIds.Contains(id)))
                 continue;
 
             byId.TryAdd(id, new WikiCandidate(
@@ -153,13 +199,14 @@ public static partial class McpMod
         return byId.Values;
     }
 
-    private static IEnumerable<WikiCandidate> BuildRelicWikiCandidates(HashSet<string> discoveredIds)
+    // Null `discoveredIds` means scope=all, as for cards above.
+    private static IEnumerable<WikiCandidate> BuildRelicWikiCandidates(HashSet<string>? discoveredIds)
     {
         var byId = new Dictionary<string, WikiCandidate>(StringComparer.OrdinalIgnoreCase);
         foreach (var relic in ModelDb.AllRelics)
         {
             var id = SafeGetText(() => relic.Id.Entry);
-            if (string.IsNullOrWhiteSpace(id) || !discoveredIds.Contains(id))
+            if (string.IsNullOrWhiteSpace(id) || (discoveredIds != null && !discoveredIds.Contains(id)))
                 continue;
 
             byId.TryAdd(id, new WikiCandidate(
