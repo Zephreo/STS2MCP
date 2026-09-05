@@ -806,6 +806,14 @@ public static partial class McpMod
             if (index < 0 || index >= holders.Count)
                 return Error($"Card index {index} out of range ({holders.Count} cards available)");
 
+            // `SelectHolder` swallows a press inside the screen's 350 ms opening
+            // deadzone without failing, so reporting `ok` here would tell a
+            // client its pick landed when nothing happened at all. See
+            // `ChooseCardScreenAcceptsInput`, which exports the same gate as
+            // `card_select.can_select` so a client can wait instead of guess.
+            if (!ChooseCardScreenAcceptsInput(chooseScreen))
+                return Error("Choose-a-card screen is still inside its 350ms opening deadzone - retry once card_select.can_select is true");
+
             var holder = holders[index];
             string cardName = SafeGetText(() => holder.CardModel?.Title) ?? "unknown";
             holder.EmitSignal(NCardHolder.SignalName.Pressed, holder);

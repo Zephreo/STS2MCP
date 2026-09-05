@@ -3466,9 +3466,52 @@ public static partial class McpMod
         state["preview_showing"] = false;
         state["can_confirm"] = false;
         state["can_cancel"] = state["can_skip"];
+        state["can_select"] = ChooseCardScreenAcceptsInput(screen);
 
         return state;
     }
+
+    /// <summary>
+    /// Whether `NChooseACardSelectionScreen.SelectHolder` would act on a press
+    /// right now, rather than swallow it.
+    /// </summary>
+    /// <remarks>
+    /// The screen opens with a 350 ms deadzone — `SelectHolder` returns without
+    /// touching its `TaskCompletionSource` unless
+    /// `Time.GetTicksMsec() - _openedTicks > 350` — so that a click still in
+    /// flight when the overlay animates in cannot pick a card the player never
+    /// saw. Nothing about the press fails: the signal fires, the handler runs,
+    /// and it simply does nothing.
+    ///
+    /// That is invisible to a client, and silently fatal to one: `select_card`
+    /// reports `ok` either way, so an engine that keys the observation it acted
+    /// on then waits forever for a state that will never change. A bot polling
+    /// ten times a second answers the FIRST observation of the screen by
+    /// construction, which is always inside the deadzone — so every
+    /// choose-a-card screen (Knowledge Demon's Curse of Knowledge, Attack
+    /// Potion, Discovery, Toolbox) wedged the run rather than occasionally
+    /// missing.
+    ///
+    /// Reporting readiness rather than refusing the action is what makes this
+    /// race-free: the flag only ever goes from false to true, so a state read
+    /// just before the deadline and acted on just after it still lands.
+    /// </remarks>
+    private static bool ChooseCardScreenAcceptsInput(NChooseACardSelectionScreen screen)
+    {
+        try
+        {
+            if (GetInstanceFieldValue(screen, "_openedTicks") is not ulong openedTicks)
+                return true;
+            return Godot.Time.GetTicksMsec() - openedTicks > ChooseCardScreenInputDeadzoneMsec;
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>`NChooseACardSelectionScreen._noSelectionTimeMsec`.</summary>
+    private const ulong ChooseCardScreenInputDeadzoneMsec = 350uL;
 
     private static Dictionary<string, object?> BuildBundleSelectState(NChooseABundleSelectionScreen screen, RunState runState)
     {

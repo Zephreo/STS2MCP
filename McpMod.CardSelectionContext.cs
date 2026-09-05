@@ -129,6 +129,13 @@ public static partial class McpMod
             "HeirloomHammer" => "hand_copy_to_hand",
             "DecisionsDecisions" => "hand_autoplay",
             "ChoicesParadox" => "generated_to_hand",
+            // Curse of Knowledge. The two offered cards are never added to any
+            // pile: `KnowledgeDemon.IChoosable.OnChosen` applies the chosen
+            // card's own power to the player and the card is dropped. Reading
+            // it as `generated_to_hand` — the `FromChooseACard` default below —
+            // asks which card is best to HOLD, when the question is which
+            // debuff hurts least for the rest of the fight.
+            "KnowledgeDemon" => "knowledge_curse",
             "Nightmare" or "DualWield" => "copy",
             "Snap" or "WellLaidPlansPower" => "retain",
             "TouchOfInsanity" => "free_this_combat",
