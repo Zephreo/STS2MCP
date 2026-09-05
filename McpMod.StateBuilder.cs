@@ -574,29 +574,35 @@ public static partial class McpMod
         }
         else if (currentRoom is MerchantRoom pendingShop
                  && NMerchantRoom.Instance != null
-                 && (!mapIsOpen || IsRunTransitionInFlight()))
+                 && (!IsMapScreenDeliberatelyOpen() || IsRunTransitionInFlight()))
         {
             // Same lingering-map masking as the rest/event/treasure branches: after
-            // travelling onto a shop node the map can stay visible while the
-            // merchant room loads underneath (NMerchantRoom.Instance != null with a
-            // live inventory), so the mapIsOpen fallback would report "map" and the
-            // bot would skip the shop entirely. That window is exactly a room
-            // transition, so IsRunTransitionInFlight() is what holds the mask over
-            // it.
+            // travelling onto a shop node the map SCREEN stays visible while the
+            // merchant room loads underneath, so a mapIsOpen fallback would report
+            // "map" and the bot would skip the shop entirely.
             //
-            // Outside that window an OPEN map means the shop is DONE, and the mask
-            // has to come off. The singleton is not the finished signal the comment
-            // here used to claim: NMerchantRoom.Instance is NRun's current room
-            // scene, and proceeding out only calls NMapScreen.Open() — the scene is
-            // replaced when the NEXT room is entered, which cannot happen until we
-            // travel. Meanwhile ActiveScreenContext hands the map the focus, so
-            // NMerchantRoom.OnActiveScreenUpdated disables the ProceedButton and
-            // NMerchantInventory.OnActiveScreenUpdated disables its BackButton: the
-            // whole merchant UI is inert and "proceed" can only ever answer "No
-            // proceed button available or enabled". A bot that trusted the mask sat
-            // there posting it forever. Travel is enabled from a merchant node
-            // (NMerchantRoom._Ready calls SetTravelEnabled(true)), so reporting
-            // "map" is both honest and actionable.
+            // Outside that the mask still has to come off, because the singleton
+            // is not a finished signal: NMerchantRoom.Instance is NRun's current
+            // room scene, and proceeding out only calls NMapScreen.Open() — the
+            // scene is replaced when the NEXT room is entered, which cannot happen
+            // until we travel. Meanwhile ActiveScreenContext hands the map the
+            // focus, so NMerchantRoom.OnActiveScreenUpdated disables the
+            // ProceedButton and NMerchantInventory.OnActiveScreenUpdated disables
+            // its BackButton: the whole merchant UI is inert and "proceed" can only
+            // ever answer "No proceed button available or enabled". A bot that
+            // trusted the mask sat there posting it forever.
+            //
+            // The signal for that is the map being DELIBERATELY open, not merely
+            // on screen. IsMapScreenOpenOrVisible() also answers true through
+            // Close()'s animate-out, which is exactly the arrival window — so
+            // gating on it unmasked the shop about 0.75s after arriving, as soon as
+            // IsRunTransitionInFlight() went false, and every merchant reported
+            // "map" for the rest of the visit. Measured over a full seeded run:
+            // three shops entered, "shop" reported for 0.75s each, three
+            // "[MAP] room never opened after travel" guard releases, 783 gold
+            // unspent at death. NMerchantRoom._Ready only calls SetTravelEnabled;
+            // the one merchant path to NMapScreen.Open() is HideScreen on the
+            // ProceedButton, so IsOpen means the shop is done and nothing else.
             result["state_type"] = "shop";
             var shopState = BuildShopState(pendingShop, runState);
             // Still exported for a client that wants to leave by travelling rather
@@ -2554,6 +2560,14 @@ public static partial class McpMod
         // advertise an option the action would then refuse.
         bool transitionInFlight = IsRunTransitionInFlight();
         state["transition_in_flight"] = transitionInFlight;
+        // The two halves of IsMapScreenOpenOrVisible(), separately, because the
+        // difference between them decides whether a room behind a lingering map
+        // is masked or reported as "map" — and when that goes wrong the symptom
+        // is a room the client never sees at all, with nothing in the state
+        // saying why. Close() clears IsOpen and only then animates out, so
+        // screen_open false with screen_visible true IS the arrival window.
+        state["screen_open"] = NMapScreen.Instance?.IsOpen == true;
+        state["screen_visible"] = NMapScreen.Instance != null && IsNodeVisible(NMapScreen.Instance);
 
         // Options from UI
         var options = new List<Dictionary<string, object?>>();

@@ -838,6 +838,8 @@ Pick one card to add to your deck. Appears after claiming a card reward, or dire
     "travel_enabled": true,      // false while the current room is unfinished
     "travel_in_flight": false,   // true between picking a node and the room loading
     "transition_in_flight": false, // true while an act change is still resolving behind this map
+    "screen_open": false,          // NMapScreen.IsOpen — the map was deliberately opened
+    "screen_visible": true,        // the map node is on screen, which includes Close()'s animate-out
     "drawing_coordinate_space": {
       "name": "map_normalized",
       "x_min": -3, "x_max": 3,
@@ -1784,7 +1786,9 @@ Travel to a map node.
 
 `next_options` is empty (and this action errors) whenever the current room is
 not finished, a travel is already resolving, or an act change is still resolving
-— `map.travel_enabled`, `map.travel_in_flight` and `map.transition_in_flight`
+— `map.travel_enabled`, `map.travel_in_flight`, `map.transition_in_flight`, and the two halves of the
+map-screen test (`map.screen_open` vs `map.screen_visible`; `Close()` clears `IsOpen` and only then
+animates out, so open=false with visible=true is the just-arrived-in-a-room window)
 say which. Sending a travel during either window wedges the run: a second map
 vote lands on top of the one still resolving, and travelling during an act
 change kills the tween `RunManager.EnterAct` is awaiting, which strands its

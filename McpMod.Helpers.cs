@@ -460,6 +460,28 @@ public static partial class McpMod
     }
 
     /// <summary>
+    /// Has the map screen been deliberately OPENED, ignoring a lingering close?
+    /// </summary>
+    /// <remarks>
+    /// NMapScreen.Close() clears IsOpen and only then animates out, so for the
+    /// rest of that animation IsNodeVisible() still reports the screen -- which
+    /// makes IsMapScreenOpenOrVisible() true immediately after travelling into
+    /// a room. That is the right reading for "is the map on screen" and the
+    /// wrong one for "did the player go back to the map", and the merchant
+    /// branch needs the second.
+    ///
+    /// NMerchantRoom._Ready only calls SetTravelEnabled(true); the one merchant
+    /// path that calls NMapScreen.Open() is HideScreen, wired to the
+    /// ProceedButton's Released signal. So at a merchant this IS the discrete
+    /// "the shop is finished" signal, which is what the rest-site and event
+    /// branches have in their own room state and the merchant lacked.
+    /// </remarks>
+    private static bool IsMapScreenDeliberatelyOpen()
+    {
+        return NMapScreen.Instance?.IsOpen == true;
+    }
+
+    /// <summary>
     /// Is the run in the middle of a room transition?
     /// </summary>
     /// <remarks>
