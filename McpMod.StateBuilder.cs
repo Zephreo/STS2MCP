@@ -2529,6 +2529,10 @@ public static partial class McpMod
         state["event_id"] = eventModel.Id.Entry;
         state["event_name"] = SafeGetText(() => eventModel.Title);
         state["is_ancient"] = isAncient;
+        // Repeated Linger pages reuse the option key while damage keeps rising.
+        // Read the local mutable copy: CanonicalEvent always has base damage.
+        if (eventModel.Id.Entry == "ABYSSAL_BATHS")
+            state["next_damage"] = eventRoom.LocalMutableEvent.DynamicVars.Damage.BaseValue;
 
         // Check dialogue state for ancients
         bool inDialogue = false;
