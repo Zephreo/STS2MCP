@@ -1639,6 +1639,45 @@ public static partial class McpMod
         return battle;
     }
 
+    /// <summary>
+    /// Whether one of this player's card or potion effects is still resolving.
+    /// </summary>
+    /// <remarks>
+    /// A polled client sees whatever frame it lands on, so it cannot tell a
+    /// finished action from one the game is halfway through. This is the game's
+    /// own answer to that, and it is the union of the two windows because
+    /// neither covers the other:
+    ///
+    /// CombatManager.IsExecutingCardOrPotionEffect wraps the effect BODY --
+    /// CardModel.OnPlay and PotionModel.OnUse, nested auto-plays included -- and
+    /// is the only signal that covers potions at all, since nothing about a
+    /// potion touches a card pile.
+    ///
+    /// The Play pile covers what surrounds that body. OnPlayWrapper puts the
+    /// card there before the first execution and files it to its result pile
+    /// only after the last one, so it spans the repeats of a Burst or Echo Form
+    /// play and the pile-move animation on either side. That animation is why
+    /// this is not academic at Instant speed: AppendPileLerpTween gives a card
+    /// entering Play a hard-coded 0.25s scale tween that FastMode does not
+    /// scale, and AddDuringManualCardPlay awaits it for Power cards.
+    ///
+    /// True while a selection overlay is up as well, since the play that opened
+    /// it genuinely has not finished. Callers that gate on this must therefore
+    /// exclude the overlay states, or they will wait for a screen that is
+    /// waiting for them; HandleGetState does it by settling only plain combat
+    /// state types.
+    /// </remarks>
+    private static bool PlayerIsResolvingEffect(Player player)
+    {
+        try
+        {
+            if (CombatManager.Instance.IsExecutingCardOrPotionEffect(player))
+                return true;
+            return player.PlayerCombatState?.PlayPile.Cards.Count > 0;
+        }
+        catch { return false; }
+    }
+
     private static Dictionary<string, object?> BuildPlayerState(Player player)
     {
         var state = new Dictionary<string, object?>();
@@ -1729,6 +1768,8 @@ public static partial class McpMod
             state["draw_pile_count"] = combatState.DrawPile.Cards.Count;
             state["discard_pile_count"] = combatState.DiscardPile.Cards.Count;
             state["exhaust_pile_count"] = combatState.ExhaustPile.Cards.Count;
+            state["play_pile_count"] = combatState.PlayPile.Cards.Count;
+            state["is_resolving"] = PlayerIsResolvingEffect(player);
 
             // Turn-history counters for cards whose effects depend on what already
             // happened this turn (Finisher counts attacks; Forgotten Ritual checks
@@ -1783,6 +1824,7 @@ public static partial class McpMod
             state["draw_pile"] = BuildPileCardList(combatState.DrawPile.Cards, PileType.Draw);
             state["discard_pile"] = BuildPileCardList(combatState.DiscardPile.Cards, PileType.Discard);
             state["exhaust_pile"] = BuildPileCardList(combatState.ExhaustPile.Cards, PileType.Exhaust);
+            state["play_pile"] = BuildPileCardList(combatState.PlayPile.Cards, PileType.Play);
 
             // Alchemize uses this exact ordered unlocked domain before its
             // rarity and item rolls on CombatPotionGeneration.

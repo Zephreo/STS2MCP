@@ -26,6 +26,8 @@ Singleplayer and multiplayer endpoints are mutually exclusive (HTTP 409 if misma
 
 `values=unpowered` strips the player's standing powers and relics back out of card descriptions and enemy intent labels, leaving base + enchantment, and marks each card `"text_baked": false` and each rebuilt intent `"unbaked": true`. Keywords (including relic-removed Exhaust), enchantment text, energy cost and orb values are identical in both modes. See raw-full.md for the full contract.
 
+Combat player objects include `play_pile` and `play_pile_count`, also for remote players. Play contains executing cards and reserved autoplays in the game's pile order; cards remain there through repeated plays and blocking selections. These are normal pile card objects, including `combat_card_id` and `target_type`. The pile reports physical cards, not their remaining execution commands.
+
 ## GET — State Types
 
 Every JSON response includes:

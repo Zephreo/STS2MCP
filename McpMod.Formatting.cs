@@ -434,6 +434,7 @@ public static partial class McpMod
         FormatPileMarkdown(sb, player, "draw_pile", "draw_pile_count", "Draw Pile", " top of pile first");
         FormatPileMarkdown(sb, player, "discard_pile", "discard_pile_count", "Discard Pile");
         FormatPileMarkdown(sb, player, "exhaust_pile", "exhaust_pile_count", "Exhaust Pile");
+        FormatPileMarkdown(sb, player, "play_pile", "play_pile_count", "Play Pile");
     }
 
     private static void FormatPetsMarkdown(StringBuilder sb, Dictionary<string, object?> player)

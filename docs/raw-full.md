@@ -151,6 +151,7 @@ Always present at the top level (except `menu`). Contains everything about the l
   "draw_pile_count": 15,
   "discard_pile_count": 3,
   "exhaust_pile_count": 1,
+  "play_pile_count": 0,
   "attacks_played_this_turn": 2,   // Attack cards this player finished playing this turn (Finisher-style counters)
   "stars_gained_this_turn": 2,     // Stars GAINED this turn (Radiate). The positive StarsModifiedEntry sum - neither the
                                    //   current "stars" total nor the Stars spent, since a turn can gain and spend the same Star.
@@ -163,6 +164,7 @@ Always present at the top level (except `menu`). Contains everything about the l
   "draw_pile": [ /* Pile Card Objects, in true order (index 0 = next draw; valid until the next shuffle event) */ ],
   "discard_pile": [ /* Pile Card Objects */ ],
   "exhaust_pile": [ /* Pile Card Objects */ ],
+  "play_pile": [ /* Pile Card Objects, in Play-pile order: executing cards and reserved autoplays */ ],
   "orbs": [ /* Orb Objects */ ],   // Defect only; omitted if orb capacity is 0
   "orb_slots": 3,
   "orb_empty_slots": 1,
@@ -1995,10 +1997,10 @@ Finish the Crystal Sphere minigame.
       //   "energy", "max_energy"
       //   "hand": [ { card info: id/name/type/cost/description/... plus
       //              "index" and "target_type" } ]
-      //   "draw_pile" / "discard_pile" / "exhaust_pile": full card lists.
+      //   "draw_pile" / "discard_pile" / "exhaust_pile" / "play_pile": full card lists.
       //      draw_pile is in true order (index 0 = next draw), valid until
       //      that player's next shuffle — same guarantee as the local player.
-      //   "draw_pile_count", "discard_pile_count", "exhaust_pile_count"
+      //   "draw_pile_count", "discard_pile_count", "exhaust_pile_count", "play_pile_count"
       //   "status": powers/debuffs (same shape as the local player's "status")
       //   "orbs" / "orb_slots" / "orb_empty_slots": Defect orb queue, if any
       //   "relics": same shape as the local player's "relics"
