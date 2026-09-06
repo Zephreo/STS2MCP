@@ -37,6 +37,8 @@ public static partial class McpMod
         internal readonly List<MethodBase> FunctionPointers = new();
         /// <summary>Integer constants pushed, in IL order.</summary>
         internal readonly List<int> Ints = new();
+        /// <summary>String literals pushed, in IL order.</summary>
+        internal readonly List<string> Strings = new();
         /// <summary>Comparison opcodes, as `ceq` / `cgt` / `clt`, in IL order.</summary>
         internal readonly List<string> Comparisons = new();
         /// <summary>Whether the body divides (an integer HP fraction).</summary>
@@ -112,6 +114,7 @@ public static partial class McpMod
                 case 0x15: scan.Ints.Add(-1); break;                        // ldc.i4.m1
                 case 0x1F: scan.Ints.Add((sbyte)il[i + 1]); break;          // ldc.i4.s
                 case 0x20: scan.Ints.Add(BitConverter.ToInt32(il, i + 1)); break;
+                case 0x72: AddString(module, il, i + 1, scan); break;             // ldstr
                 case 0x5B or 0x5C: scan.HasDivision = true; break;          // div / div.un
                 case (>= 0x2B and <= 0x37) or (>= 0x38 and <= 0x44):
                     // br.s/br are the ternary's own join, not a decision.
@@ -150,6 +153,20 @@ public static partial class McpMod
                 foreach (var arg in method.GetGenericArguments())
                     scan.GenericArgs.Add(arg.Name);
             }
+        }
+        catch { }
+    }
+
+    /// <summary>Resolves an `ldstr` token into the literal it pushes.</summary>
+    private static void AddString(Module module, byte[] il, int tokenOffset, PredicateScan scan)
+    {
+        if (tokenOffset + 4 > il.Length)
+            return;
+        try
+        {
+            var literal = module.ResolveString(BitConverter.ToInt32(il, tokenOffset));
+            if (literal != null)
+                scan.Strings.Add(literal);
         }
         catch { }
     }
@@ -303,5 +320,197 @@ public static partial class McpMod
             return null;
         var scan = ScanPredicate(weightLambda.Method);
         return ReadsAny(scan, ".CanSummon") ? "two_tailed_rat_can_summon" : null;
+    }
+
+    /// <summary>
+    /// Translates one branch predicate into the re-evaluable condition language.
+    /// </summary>
+    /// <remarks>
+    /// The comparison and threshold always come from the predicate's own IL.
+    /// The member-to-quantity mapping below is the part that cannot: it records
+    /// what a mutable monster field counts, which is established in the move
+    /// that writes it, not in the predicate that reads it. Each entry cites the
+    /// source that justifies it. An unrecognized predicate falls through to a
+    /// snapshot, which the consumer already treats as inexact.
+    /// </remarks>
+    /// <param name="placementSampled">
+    /// Whether <paramref name="enabled"/> was measured against a live creature.
+    /// The mod samples one, so an encounter-placement test resolves to the
+    /// constant it evaluated to; a creature-less host (the offline model export)
+    /// has nothing to sample and needs the test itself.
+    /// </param>
+    internal static Dictionary<string, object?> BuildCondition(
+        Delegate? lambda, int branchIndex, bool enabled, out bool isSnapshot, bool placementSampled = true)
+    {
+        isSnapshot = false;
+        var scan = ScanPredicate(lambda?.Method);
+        bool negated = IsNegated(scan);
+
+        // Encounter-fixed placement: the slot a creature occupies, and the
+        // `IsFront` / `IsAlone` flags the encounter sets before combat, never
+        // change once the monster exists. The sampled value is therefore exact
+        // for the whole search rather than a snapshot of moving state.
+        if (ReadsAny(scan, ".get_SlotName", ".get_IsFront", ".get_IsAlone"))
+        {
+            if (placementSampled)
+                return Condition("constant", ("value", enabled));
+            var placement = PlacementCondition(scan, negated);
+            if (placement != null)
+                return placement;
+            isSnapshot = true;
+            return Condition("snapshot", ("value", enabled));
+        }
+
+        // `Creature.HasPower<T>()`: the generic argument names the power.
+        if (scan.Reads("Creature.HasPower") && scan.GenericArgs.Count > 0)
+            return Negate(Condition("owner_power", ("power_id", PowerIdFromClass(scan.GenericArgs[0]))), negated);
+
+        // FrogKnight: branch 0 is `HasBeetleCharged || CurrentHp >= MaxHp / 2`
+        // and branch 1 is its exact complement, `!HasBeetleCharged && CurrentHp
+        // < MaxHp / 2`. Emitting the complement as `not` follows the source's
+        // own branch order, rather than guessing how the compiler lowered a
+        // short-circuit into branch opcodes. C# integer division floors, so the
+        // threshold is floor(MaxHp/denominator), not the exact rational.
+        if (scan.Reads("FrogKnight.get_HasBeetleCharged"))
+        {
+            int denominator = scan.Ints.FirstOrDefault(value => value > 1);
+            if (denominator <= 1)
+                denominator = 2;
+            var charged = Condition("move_seen", ("move_id", "BEETLE_CHARGE"));
+            var half = Condition("owner_hp_fraction",
+                ("cmp", "ge"), ("numerator", 1), ("denominator", denominator), ("floor", true));
+            var either = Condition("or", ("args", new[] { charged, half }));
+            return branchIndex == 0 ? either : Condition("not", ("arg", either));
+        }
+
+        // Living-teammate counts. `GetTeammatesOf` returns the whole side, so a
+        // count includes the owner unless its LINQ predicate rejects it; the
+        // consumer counts other living enemies, and `include_self` tells it
+        // which of the two the threshold was written against. The comparison and
+        // constant may sit one call deeper, in the bool property the predicate
+        // reads.
+        var inlined = InlineMonsterCall(scan);
+        if (scan.Reads("CombatState.GetTeammatesOf") || scan.Reads("ICombatState.GetTeammatesOf")
+            || inlined?.Reads("CombatState.GetTeammatesOf") == true
+            || inlined?.Reads("ICombatState.GetTeammatesOf") == true)
+            return BuildAllyCountCondition(scan, inlined, negated, ref isSnapshot);
+
+        // Counters a move increments once per performance, so the machine's own
+        // move log reproduces them exactly.
+        //   KnowledgeDemon._curseOfKnowledgeCounter -> CurseOfKnowledgeMove
+        //   TestSubject.Respawns                    -> RespawnMove
+        if (scan.Reads("KnowledgeDemon._curseOfKnowledgeCounter"))
+            return BuildMoveCountCondition(scan, negated, "CURSE_OF_KNOWLEDGE_MOVE", ref isSnapshot);
+        if (scan.Reads("TestSubject.get_Respawns"))
+            return BuildMoveCountCondition(scan, negated, "RESPAWN_MOVE", ref isSnapshot);
+
+        // Queen.HasAmalgamDied is latched in AfterDeath when a TorchHeadAmalgam
+        // dies, so "not yet died" is "an amalgam is still alive".
+        if (scan.Reads("Queen.get_HasAmalgamDied"))
+        {
+            var alive = Condition("monster_alive", ("entity_prefix", "TORCH_HEAD_AMALGAM"));
+            return negated ? alive : Condition("not", ("arg", alive));
+        }
+
+        // BowlbugRock.IsOffBalance is set by ImbalancedPower when the owner's
+        // own attack is fully blocked, which the consumer already tracks as the
+        // pending Imbalanced stun.
+        if (scan.Reads("BowlbugRock.get_IsOffBalance"))
+            return Negate(Condition("owner_power", ("power_id", "IMBALANCED_STUN")), negated);
+
+        isSnapshot = true;
+        return Condition("snapshot", ("value", enabled));
+    }
+
+    /// <summary>
+    /// The encounter-placement test a predicate makes, for a host that cannot
+    /// sample it.
+    /// </summary>
+    /// <remarks>
+    /// Five monsters open on `Creature.SlotName == "<c>first</c>"` and its
+    /// siblings, where the literal comes straight out of the predicate's own
+    /// `ldstr`. Toadpole and Nibbit instead read `IsFront` / `IsAlone`, which
+    /// the encounter stamps on the monster instance it generates rather than on
+    /// the slot, so those travel as flags of their own.
+    ///
+    /// Returns null for a placement test in none of those shapes, which the
+    /// caller downgrades to a snapshot rather than guessing.
+    /// </remarks>
+    private static Dictionary<string, object?>? PlacementCondition(PredicateScan scan, bool negated)
+    {
+        if (ReadsAny(scan, ".get_SlotName"))
+        {
+            string? slot = scan.Strings.LastOrDefault();
+            return slot == null ? null : Negate(Condition("owner_slot", ("name", slot)), negated);
+        }
+        if (ReadsAny(scan, ".get_IsFront"))
+            return Negate(Condition("owner_is_front"), negated);
+        if (ReadsAny(scan, ".get_IsAlone"))
+            return Negate(Condition("owner_is_alone"), negated);
+        return null;
+    }
+
+    private static Dictionary<string, object?> BuildAllyCountCondition(
+        PredicateScan scan, PredicateScan? inlined, bool negated, ref bool isSnapshot)
+    {
+        // The predicate owns the comparison when it makes one itself
+        // (`GetAllyCount() > 0`); otherwise it just reads a bool property and
+        // the comparison belongs to that property's body.
+        bool comparesDirectly = scan.Comparisons.Any(comparison => comparison != "ceq")
+            || (scan.Comparisons.Count > 0 && !TestsBoolean(scan));
+        var source = comparesDirectly || inlined == null ? scan : inlined;
+        // An inner `<=` is itself a negated `>`, and an outer `!` inverts that
+        // again, so the two compose.
+        bool effectiveNegation = ReferenceEquals(source, scan) ? negated : IsNegated(source) ^ negated;
+
+        string? cmp = SourceComparison(source, effectiveNegation);
+        int? value = Threshold(source);
+        if (cmp == null || value == null)
+        {
+            isSnapshot = true;
+            return Condition("snapshot", ("value", false));
+        }
+        return Condition("living_allies",
+            ("cmp", cmp), ("value", value.Value), ("include_self", !CountExcludesSelf(scan, inlined)));
+    }
+
+    private static Dictionary<string, object?> BuildMoveCountCondition(
+        PredicateScan scan, bool negated, string moveId, ref bool isSnapshot)
+    {
+        string? cmp = SourceComparison(scan, negated);
+        int? value = Threshold(scan);
+        if (cmp == null || value == null)
+        {
+            isSnapshot = true;
+            return Condition("snapshot", ("value", false));
+        }
+        return Condition("move_count", ("move_id", moveId), ("cmp", cmp), ("value", value.Value));
+    }
+
+    private static Dictionary<string, object?> Negate(Dictionary<string, object?> condition, bool negated) =>
+        negated ? Condition("not", ("arg", condition)) : condition;
+
+    /// <summary>`AsleepPower` -&gt; `ASLEEP`, matching the consumer's power ids.</summary>
+    private static string PowerIdFromClass(string className)
+    {
+        string stripped = className.EndsWith("Power") ? className[..^"Power".Length] : className;
+        var id = new System.Text.StringBuilder(stripped.Length + 4);
+        for (int i = 0; i < stripped.Length; i++)
+        {
+            if (i != 0 && char.IsUpper(stripped[i]))
+                id.Append('_');
+            id.Append(char.ToUpperInvariant(stripped[i]));
+        }
+        return id.ToString();
+    }
+
+    private static Dictionary<string, object?> Condition(
+        string op,
+        params (string key, object? value)[] fields)
+    {
+        var result = new Dictionary<string, object?> { ["op"] = op };
+        foreach (var (key, value) in fields)
+            result[key] = value;
+        return result;
     }
 }
