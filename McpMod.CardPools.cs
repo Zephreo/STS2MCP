@@ -141,8 +141,31 @@ public static partial class McpMod
             // (shop shelves, card rewards) needs it to index the same list the
             // game did.
             ["multiplayer_constraint"] = card.MultiplayerConstraint.ToString(),
+            // Jackpot narrows its domain with
+            // `c.EnergyCost.Canonical == 0 && !c.EnergyCost.CostsX`, which is
+            // the model's PRINTED cost and not any live discount. Nothing else
+            // on the card exposes it, so export both halves of that predicate
+            // rather than leaving a client to guess a cost from card text.
+            ["energy_cost"] = SafeCanonicalEnergyCost(card),
+            ["costs_x"] = SafeCostsX(card),
             ["can_be_generated_in_combat"] = SafeCanBeGeneratedInCombat(card)
         };
+    }
+
+    // CardModel.EnergyCost is lazily constructed off virtual members, so a
+    // modded or malformed card can throw here. A null cost reads client-side as
+    // "unknown", which keeps such a card out of a cost-narrowed domain rather
+    // than admitting it at a guessed cost.
+    private static int? SafeCanonicalEnergyCost(CardModel card)
+    {
+        try { return card.EnergyCost?.Canonical; }
+        catch { return null; }
+    }
+
+    private static bool SafeCostsX(CardModel card)
+    {
+        try { return card.EnergyCost?.CostsX ?? false; }
+        catch { return false; }
     }
 
     private static string? SafeGetCardPoolTitle(CardModel card)
