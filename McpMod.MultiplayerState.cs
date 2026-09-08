@@ -788,7 +788,7 @@ public static partial class McpMod
                             entry["discard_pile_count"] = cs.DiscardPile.Cards.Count;
                             entry["exhaust_pile_count"] = cs.ExhaustPile.Cards.Count;
                             entry["play_pile_count"] = cs.PlayPile.Cards.Count;
-                            entry["is_resolving"] = PlayerIsResolvingEffect(p);
+                            entry["is_resolving"] = PlayerIsResolvingEffect(player);
 
                             // Full pile contents so the teammate's turn can be
                             // forward-modelled. Draw pile is in true order
