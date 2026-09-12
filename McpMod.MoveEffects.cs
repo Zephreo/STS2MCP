@@ -591,6 +591,28 @@ public static partial class McpMod
                 summon["count"] = 3;
                 summon["slot_order"] = "last";
             }
+            // `LayEggsMove` applies `MinionPower` to each egg it has just added,
+            // so the recipient is a creature that did not exist when the move
+            // began - neither the mover's own `Creature` nor the move's target
+            // list. The scan is right to call that "unknown", and the consumer
+            // is right to drop it; but it then flags
+            // `move_fx_apply_target_unknown:LAY_EGGS_MOVE:MINION` for an effect
+            // that is not missing at all, because a summoned creature's own
+            // powers come from the consumer's spawn catalog and `ToughEgg`
+            // already carries `MINION`. Dropping the entry here keeps a closed
+            // item out of the run-log worklist. Only this power is removed, so
+            // any other apply the move grows stays unknown and stays flagged.
+            if (fx.TryGetValue("applies", out object? appliesObject)
+                && appliesObject is List<Dictionary<string, object?>> applies)
+            {
+                applies.RemoveAll(apply =>
+                    apply.TryGetValue("power", out object? power)
+                    && power as string == "MinionPower"
+                    && apply.TryGetValue("target", out object? target)
+                    && target as string == "unknown");
+                if (applies.Count == 0)
+                    fx.Remove("applies");
+            }
         }
         if (monsterName == "TwoTailedRat" && move.Id == "CALL_FOR_BACKUP_MOVE"
             && fx.TryGetValue("summons", out summonsObject)
