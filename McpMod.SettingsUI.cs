@@ -109,6 +109,27 @@ public static partial class McpMod
         }
     }
 
+    /// <summary>
+    /// Whether the game's prefs currently say Instant. This is the flag
+    /// <c>Cmd.Wait</c> and <c>Cmd.CustomScaledWait</c> themselves read, so it is the
+    /// right question to ask before standing in for an animation they will skip.
+    /// Deliberately reads the pref rather than <see cref="_instantModeEnabled" />: the
+    /// dev console's own `instant` command sets Instant without going through us.
+    /// </summary>
+    internal static bool InstantModeIsActive()
+    {
+        if (!PrefsAreLoaded()) return false;
+        try
+        {
+            return SaveManager.Instance.PrefsSave?.FastMode == FastModeType.Instant;
+        }
+        catch
+        {
+            // Scene tree or save manager not up yet; nothing is running Instant either.
+            return false;
+        }
+    }
+
     private static bool IsInInstantModeLine(Node node)
     {
         var current = node;
