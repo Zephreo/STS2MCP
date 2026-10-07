@@ -142,6 +142,34 @@ namespace STS2_MCP
             Check("player-count heal", ScanBody(nameof(MoveBodies.PlayerCountScaledHeal)).Heal, 60);
             Check("stat x player-count heal", ScanBody(nameof(MoveBodies.StatTimesPlayerCountHeal)).Heal, 30);
 
+            // The cold exporter has no combat. Source descriptors preserve the
+            // multiplier; the native consumer owns the actual player count.
+            foreach (var (healer, moveId, amount) in new[]
+            {
+                ((MegaCrit.Sts2.Core.Models.MonsterModel)new KnowledgeDemon(), "PONDER_MOVE", 30),
+                (new WaterfallGiant(), "SIPHON_MOVE", 10),
+                (new WaterfallGiant { ToughEnemies = true }, "SIPHON_MOVE", 15),
+            })
+            {
+                var effects = new Dictionary<string, object?> { ["heal"] = amount * 2 };
+                var move = new MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine.MoveState(
+                    (Action)(() => { }), moveId);
+                AddStatefulMoveSemantics(healer, move, effects);
+                Check($"{moveId} per-player heal", effects["heal_per_player"], amount);
+                Check($"{moveId} no duplicated flat heal", effects.ContainsKey("heal"), false);
+            }
+
+            var demon = new KnowledgeDemon();
+            var curse = new MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine.MoveState(
+                (Action)(() => { }), "CURSE_OF_KNOWLEDGE_MOVE");
+            var firstCurse = GetMoveEffects(demon, curse)!;
+            Check("first live curse index", firstCurse["knowledge_choice"], 0);
+            demon.CurseOfKnowledgeCounter = 1;
+            Check("cached second live curse index", GetMoveEffects(demon, curse)!["knowledge_choice"], 1);
+            demon.CurseOfKnowledgeCounter = 2;
+            Check("cached third live curse index", GetMoveEffects(demon, curse)!["knowledge_choice"], 2);
+            Check("older curse observation remains intact", firstCurse["knowledge_choice"], 0);
+
             // Placement, including a move that splits across two piles.
             CheckInsert("discard insert", nameof(MoveBodies.DiscardInsert), 0, "Dazed", 3, "Discard", "Bottom");
             CheckInsert("hand insert", nameof(MoveBodies.HandInsert), 0, "Slimed", 2, "Hand", "Bottom");

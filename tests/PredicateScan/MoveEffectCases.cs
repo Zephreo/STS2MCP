@@ -6,6 +6,17 @@ using System.Threading.Tasks;
 // Move bodies copied from the decompiled monsters, reduced to the calls the
 // scanner reads. Each one pins a way the game reaches an amount or an insert.
 
+public sealed class KnowledgeDemon : MegaCrit.Sts2.Core.Models.MonsterModel
+{
+    public int CurseOfKnowledgeCounter { get; set; }
+}
+
+public sealed class WaterfallGiant : MegaCrit.Sts2.Core.Models.MonsterModel
+{
+    public bool ToughEnemies { get; init; }
+    public int SiphonHeal => ToughEnemies ? 15 : 10;
+}
+
 public sealed class MoveBodies : MegaCrit.Sts2.Core.Models.MonsterModel
 {
     private int _ritualGain = 6;

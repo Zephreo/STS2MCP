@@ -118,7 +118,11 @@ namespace MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine
     public sealed class MoveState
     {
         private readonly Delegate? _onPerform;
-        public MoveState(Delegate onPerform) => _onPerform = onPerform;
-        public string Id => "TEST_MOVE";
+        public MoveState(Delegate onPerform, string id = "TEST_MOVE")
+        {
+            _onPerform = onPerform;
+            Id = id;
+        }
+        public string Id { get; }
     }
 }

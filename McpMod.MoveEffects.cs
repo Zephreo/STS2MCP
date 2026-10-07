@@ -88,7 +88,16 @@ public static partial class McpMod
             }
             var key = (monster.GetType(), move.Id);
             if (_moveFxCache.TryGetValue(key, out var cached))
-                return cached;
+            {
+                if (cached == null)
+                    return null;
+                // The command scan is reusable, but descriptors such as the
+                // curse index and Wither level read mutable monster state.
+                // Copy before refreshing so older observations stay intact.
+                var current = new Dictionary<string, object?>(cached);
+                AddStatefulMoveSemantics(monster, move, current);
+                return current;
+            }
             var fx = ScanMoveEffects(monster, move);
             _moveFxCache[key] = fx;
             return fx;
@@ -575,6 +584,21 @@ public static partial class McpMod
 
             case ("KnowledgeDemon", "CURSE_OF_KNOWLEDGE_MOVE"):
                 fx["knowledge_choice"] = ReadMonsterInt(monster, "CurseOfKnowledgeCounter");
+                break;
+
+            case ("KnowledgeDemon", "PONDER_MOVE"):
+                // Ponder heals 30 * CombatState.Players.Count. A cold export
+                // has no combat to read that count from; retain the source
+                // multiplier instead of dropping an unresolved numeric heal.
+                fx.Remove("heal");
+                fx["heal_per_player"] = 30;
+                break;
+
+            case ("WaterfallGiant", "SIPHON_MOVE"):
+                // Read the ascension-scaled property, then let the consumer
+                // multiply by its actual combat player count exactly once.
+                fx.Remove("heal");
+                fx["heal_per_player"] = ReadMonsterInt(monster, "SiphonHeal");
                 break;
 
             case ("WaterfallGiant", "PRESSURE_GUN_MOVE"):
