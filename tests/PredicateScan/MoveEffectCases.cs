@@ -15,6 +15,20 @@ public sealed class WaterfallGiant : MegaCrit.Sts2.Core.Models.MonsterModel
 {
     public bool ToughEnemies { get; init; }
     public int SiphonHeal => ToughEnemies ? 15 : 10;
+    public int BasePressureGunDamage => 20;
+    public int CurrentPressureGunDamage { get; set; } = 20;
+}
+
+public sealed class TestSubject : MegaCrit.Sts2.Core.Models.MonsterModel
+{
+    public int BaseMultiClawCount => 3;
+    public int ExtraMultiClawCount { get; set; }
+}
+
+public sealed class Aeonglass : MegaCrit.Sts2.Core.Models.MonsterModel
+{
+    public int IncreasingIntensityBaseStrength => 3;
+    public int AdditionalStrength { get; set; }
 }
 
 public sealed class MoveBodies : MegaCrit.Sts2.Core.Models.MonsterModel

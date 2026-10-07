@@ -170,6 +170,34 @@ namespace STS2_MCP
             Check("cached third live curse index", GetMoveEffects(demon, curse)!["knowledge_choice"], 2);
             Check("older curse observation remains intact", firstCurse["knowledge_choice"], 0);
 
+            var giant = new WaterfallGiant();
+            var gun = new MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine.MoveState(
+                (Action)(() => { }), "PRESSURE_GUN_MOVE");
+            var firstGun = GetMoveEffects(giant, gun)!;
+            Check("Pressure Gun initial base", firstGun["repeat_damage_base"], 20);
+            Check("Pressure Gun initial completed", firstGun["repeat_damage_completed"], 0);
+            giant.CurrentPressureGunDamage = 30;
+            Check("cached Pressure Gun completed", GetMoveEffects(giant, gun)!["repeat_damage_completed"], 2);
+            Check("older Pressure Gun observation intact", firstGun["repeat_damage_completed"], 0);
+
+            var subject = new TestSubject();
+            var claw = new MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine.MoveState(
+                (Action)(() => { }), "MULTI_CLAW_MOVE");
+            var firstClaw = GetMoveEffects(subject, claw)!;
+            Check("Multi Claw initial base", firstClaw["repeat_hit_base"], 3);
+            subject.ExtraMultiClawCount = 4;
+            Check("cached Multi Claw completed", GetMoveEffects(subject, claw)!["repeat_hit_completed"], 4);
+            Check("older Multi Claw observation intact", firstClaw["repeat_hit_completed"], 0);
+
+            var aeon = new Aeonglass();
+            var intensity = new MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine.MoveState(
+                (Action)(() => { }), "INCREASING_INTENSITY_MOVE");
+            var firstIntensity = GetMoveEffects(aeon, intensity)!;
+            Check("Intensity base", firstIntensity["repeat_power_base"], 3);
+            aeon.AdditionalStrength = 2;
+            Check("cached Intensity completed", GetMoveEffects(aeon, intensity)!["repeat_power_completed"], 2);
+            Check("older Intensity observation intact", firstIntensity["repeat_power_completed"], 0);
+
             // Placement, including a move that splits across two piles.
             CheckInsert("discard insert", nameof(MoveBodies.DiscardInsert), 0, "Dazed", 3, "Discard", "Bottom");
             CheckInsert("hand insert", nameof(MoveBodies.HandInsert), 0, "Slimed", 2, "Hand", "Bottom");

@@ -464,6 +464,8 @@ public static partial class McpMod
                     ["power"] = "StrengthPower",
                     ["amount"] = 1,
                 };
+                fx["repeat_power_completed"] = ReadMonsterInt(monster, "AdditionalStrength");
+                fx["repeat_power_base"] = ReadMonsterInt(monster, "IncreasingIntensityBaseStrength");
                 break;
 
             case ("Axebot", "BOOT_UP_MOVE"):
@@ -551,6 +553,8 @@ public static partial class McpMod
 
             case ("TestSubject", "MULTI_CLAW_MOVE"):
                 fx["repeat_hit_growth"] = 1;
+                fx["repeat_hit_base"] = ReadMonsterInt(monster, "BaseMultiClawCount");
+                fx["repeat_hit_completed"] = ReadMonsterInt(monster, "ExtraMultiClawCount");
                 break;
 
             case ("TheInsatiable", "LIQUIFY_GROUND_MOVE"):
@@ -603,6 +607,11 @@ public static partial class McpMod
 
             case ("WaterfallGiant", "PRESSURE_GUN_MOVE"):
                 fx["repeat_damage_growth"] = 5;
+                fx["repeat_damage_base"] = ReadMonsterInt(monster, "BasePressureGunDamage");
+                var pressureBase = ReadMonsterInt(monster, "BasePressureGunDamage");
+                var pressureCurrent = ReadMonsterInt(monster, "CurrentPressureGunDamage");
+                fx["repeat_damage_completed"] = pressureBase.HasValue && pressureCurrent.HasValue
+                    ? Math.Max(0, (pressureCurrent.Value - pressureBase.Value) / 5) : null;
                 break;
         }
 
