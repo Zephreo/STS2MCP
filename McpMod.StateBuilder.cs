@@ -1780,6 +1780,9 @@ public static partial class McpMod
                 var combatStateShared = creature.CombatState;
                 state["cards_started_this_turn"] = history.CardPlaysStarted.Count(en =>
                     en.HappenedThisTurn(combatStateShared) && en.CardPlay.Card.Owner == player);
+                state["skills_started_this_turn"] = history.CardPlaysStarted.Count(en =>
+                    en.HappenedThisTurn(combatStateShared) && en.CardPlay.Card.Owner == player
+                    && en.CardPlay.Card.Type == CardType.Skill);
                 state["card_series_started_this_turn"] = history.CardPlaysStarted.Count(en =>
                     en.HappenedThisTurn(combatStateShared) && en.CardPlay.Card.Owner == player && en.CardPlay.IsFirstInSeries);
                 state["zero_cost_attacks_started_this_turn"] = history.CardPlaysStarted.Count(en =>
@@ -2240,6 +2243,7 @@ public static partial class McpMod
             ["description"] = SafeGetCardDescription(card, pile),
             ["rarity"] = card.Rarity.ToString(),
             ["enchantment"] = card.Enchantment?.GetType().Name,
+            ["affliction"] = card.Affliction?.Id.Entry,
             ["has_deck_version"] = card.DeckVersion != null,
             ["is_upgraded"] = card.IsUpgraded,
             ["base_replay_count"] = card.BaseReplayCount,
