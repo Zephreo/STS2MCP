@@ -349,7 +349,7 @@ public static partial class McpMod
         // remote players' plays too.
         try
         {
-            battle["card_plays"] = BuildCardPlaysState();
+            battle["card_plays"] = BuildCardPlaysState(combatState);
             battle["card_history"] = BuildCardHistoryState(combatState);
             battle["player_damage"] = BuildPlayerDamageState(runState, combatState.RoundNumber);
         }
@@ -421,7 +421,7 @@ public static partial class McpMod
         catch { return null; }
     }
 
-    private static List<Dictionary<string, object?>> BuildCardPlaysState()
+    private static List<Dictionary<string, object?>> BuildCardPlaysState(ICombatState combatState)
     {
         var plays = new List<Dictionary<string, object?>>();
         int idx = 0;
@@ -445,6 +445,9 @@ public static partial class McpMod
                 // An extra turn shares its round with the turn before it, so
                 // `round` alone cannot group plays into turns.
                 ["player_turn"] = GetEntryPlayerTurn(entry, CardOwner(cardPlay.Card)),
+                // Includes every player's turn snapshot and CurrentSide; an
+                // owner's unchanged turn alone cannot group multiplayer rows.
+                ["happened_this_turn"] = entry.HappenedThisTurn(combatState),
                 ["player"] = SafeGetText(() => cardPlay.Card.Owner.Character.Title),
                 ["is_local"] = LocalContext.IsMe(cardPlay.Card.Owner),
                 ["card_id"] = SafeGetText(() => cardPlay.Card.Id.Entry),
@@ -457,6 +460,8 @@ public static partial class McpMod
                 ["play_index"] = cardPlay.PlayIndex,
                 ["play_count"] = cardPlay.PlayCount,
                 ["is_auto_play"] = cardPlay.IsAutoPlay,
+                // Immutable at finish, unlike the card's current keywords.
+                ["was_ethereal"] = entry.WasEthereal,
                 ["target"] = target
             });
         }

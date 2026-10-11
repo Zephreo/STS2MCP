@@ -1628,7 +1628,7 @@ public static partial class McpMod
 
         // Gold Axe and other combat-wide counters include every player's card
         // plays. Singleplayer now exposes the same history shape as MP.
-        try { battle["card_plays"] = BuildCardPlaysState(); }
+        try { battle["card_plays"] = BuildCardPlaysState(combatState); }
         catch { /* history unavailable while combat is tearing down */ }
 
         // Where every card went this turn and last — drawn/discarded/exhausted/
@@ -1778,6 +1778,13 @@ public static partial class McpMod
             {
                 var history = CombatManager.Instance.History;
                 var combatStateShared = creature.CombatState;
+                state["cards_started_this_turn"] = history.CardPlaysStarted.Count(en =>
+                    en.HappenedThisTurn(combatStateShared) && en.CardPlay.Card.Owner == player);
+                state["card_series_started_this_turn"] = history.CardPlaysStarted.Count(en =>
+                    en.HappenedThisTurn(combatStateShared) && en.CardPlay.Card.Owner == player && en.CardPlay.IsFirstInSeries);
+                state["zero_cost_attacks_started_this_turn"] = history.CardPlaysStarted.Count(en =>
+                    en.HappenedThisTurn(combatStateShared) && en.CardPlay.Card.Owner == player
+                    && en.CardPlay.Card.Type == CardType.Attack && en.CardPlay.Resources.EnergyValue == 0);
                 state["attacks_played_this_turn"] = history.CardPlaysFinished.Count(en =>
                     en.HappenedThisTurn(combatStateShared)
                     && en.CardPlay.Card.Type == CardType.Attack
@@ -2120,6 +2127,56 @@ public static partial class McpMod
     private static string GetCostDisplay(CardModel card)
         => card.EnergyCost.CostsX ? "X" : card.EnergyCost.GetAmountToSpend().ToString();
 
+    // Cost display alone loses ordering, intrinsic upgrades, and independent
+    // expiration flags. Reflection is required because this source list is private.
+    private static readonly FieldInfo EnergyLocalModifiersField =
+        typeof(CardEnergyCost).GetField("_localModifiers", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingFieldException(typeof(CardEnergyCost).FullName, "_localModifiers");
+
+    private static Dictionary<string, object?> BuildEnergyCostState(CardModel card)
+    {
+        var energy = card.EnergyCost;
+        if (EnergyLocalModifiersField.GetValue(energy) is not List<LocalCostModifier> modifiers)
+            throw new InvalidOperationException("CardEnergyCost._localModifiers has an unsupported shape.");
+        return new Dictionary<string, object?>
+        {
+            ["canonical"] = energy.Canonical,
+            ["base"] = energy.GetWithModifiers(CostModifiers.None),
+            ["costs_x"] = energy.CostsX,
+            ["captured_x"] = energy.CostsX ? energy.CapturedXValue : (int?)null,
+            ["modifiers"] = modifiers.Select(modifier => new Dictionary<string, object?>
+            {
+                ["amount"] = modifier.Amount,
+                ["kind"] = modifier.Type.ToString(),
+                ["expiration"] = (int)modifier.Expiration,
+                ["reduce_only"] = modifier.IsReduceOnly
+            }).ToArray()
+        };
+    }
+
+    private static readonly FieldInfo StarCostModifiersField =
+        typeof(CardModel).GetField("_temporaryStarCosts", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingFieldException(typeof(CardModel).FullName, "_temporaryStarCosts");
+
+    private static Dictionary<string, object?> BuildStarCostState(CardModel card)
+    {
+        if (StarCostModifiersField.GetValue(card) is not List<TemporaryCardCost> modifiers)
+            throw new InvalidOperationException("CardModel._temporaryStarCosts has an unsupported shape.");
+        return new Dictionary<string, object?>
+        {
+            ["canonical"] = card.CanonicalStarCost,
+            ["base"] = card.BaseStarCost,
+            ["costs_x"] = card.HasStarCostX,
+            ["last_spent"] = card.LastStarsSpent,
+            ["modifiers"] = modifiers.Select(modifier => new Dictionary<string, object?>
+            {
+                ["cost"] = modifier.Cost,
+                ["clears_when_turn_ends"] = modifier.ClearsWhenTurnEnds,
+                ["clears_when_played"] = modifier.ClearsWhenCardIsPlayed
+            }).ToArray()
+        };
+    }
+
     private static string? GetStarCostDisplay(CardModel card)
     {
         if (card.HasStarCostX) return "X";
@@ -2177,7 +2234,9 @@ public static partial class McpMod
             ["name"] = SafeGetText(() => card.Title),
             ["type"] = card.Type.ToString(),
             ["cost"] = GetCostDisplay(card),
+            ["energy_cost_state"] = BuildEnergyCostState(card),
             ["star_cost"] = GetStarCostDisplay(card),
+            ["star_cost_state"] = BuildStarCostState(card),
             ["description"] = SafeGetCardDescription(card, pile),
             ["rarity"] = card.Rarity.ToString(),
             ["enchantment"] = card.Enchantment?.GetType().Name,
