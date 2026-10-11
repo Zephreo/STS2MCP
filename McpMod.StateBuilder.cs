@@ -2192,9 +2192,10 @@ public static partial class McpMod
     // teammate reveal (BuildAllPlayersState) so orb serialization stays in sync.
     private static void AddOrbsState(Dictionary<string, object?> state, Player player)
     {
+        state["base_orb_slots"] = player.Character.BaseOrbSlotCount;
         var combatState = player.PlayerCombatState;
         var orbQueue = combatState?.OrbQueue;
-        if (orbQueue == null || orbQueue.Capacity <= 0)
+        if (orbQueue == null)
             return;
 
         var orbs = new List<Dictionary<string, object?>>();
