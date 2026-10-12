@@ -2318,6 +2318,15 @@ public static partial class McpMod
         };
         if (extra.HasValue)
             state["extra"] = extra.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (card.Enchantment is MegaCrit.Sts2.Core.Models.Enchantments.Momentum momentum)
+            state["after_play"] = new Dictionary<string, object?>
+            {
+                ["kind"] = "Momentum",
+                ["amount"] = momentum.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            };
+        else if (card.Enchantment is MegaCrit.Sts2.Core.Models.Enchantments.Vigorous vigorous
+                 && vigorous.Status == MegaCrit.Sts2.Core.Entities.Enchantments.EnchantmentStatus.Normal)
+            state["after_play"] = new Dictionary<string, object?> { ["kind"] = "Vigorous" };
         return state;
     }
 
