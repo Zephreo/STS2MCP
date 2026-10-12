@@ -724,7 +724,7 @@ Appears when a card effect prompts "Select a card to exhaust/discard/upgrade". *
       }
     ],
     "selected_cards": [          // Only present if cards have been selected
-      { "index": 0, "name": "Defend" }
+      { "index": 0, "hand_index": 2, "id": "DEFEND", "name": "Defend", "is_upgraded": false /* full Card State */ }
     ],
     "can_confirm": false
   },

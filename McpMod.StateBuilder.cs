@@ -3732,11 +3732,27 @@ public static partial class McpMod
             {
                 var card = holder.CardModel;
                 if (card == null) continue;
-                selectedCards.Add(new Dictionary<string, object?>
+                int handIndex = -1;
+                var handCards = card.Owner.PlayerCombatState?.Hand.Cards;
+                if (handCards != null)
                 {
-                    ["index"] = selIdx,
-                    ["name"] = SafeGetText(() => card.Title)
-                });
+                    for (int position = 0; position < handCards.Count; position++)
+                    {
+                        if (ReferenceEquals(handCards[position], card))
+                        {
+                            handIndex = position;
+                            break;
+                        }
+                    }
+                }
+                if (handIndex < 0)
+                    throw new InvalidOperationException("Selected Hand card is absent from its combat Hand pile.");
+                var selectedInfo = BuildCardState(card, handIndex);
+                // index addresses the selected UI container; hand_index names
+                // the physical card in player.hand, including identical copies.
+                selectedInfo["index"] = selIdx;
+                selectedInfo["hand_index"] = handIndex;
+                selectedCards.Add(selectedInfo);
                 selIdx++;
             }
             if (selectedCards.Count > 0)
