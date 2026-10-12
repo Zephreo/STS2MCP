@@ -1701,6 +1701,7 @@ public static partial class McpMod
         state["combat_id"] = creature.CombatId;
         state["hp"] = creature.CurrentHp;
         state["effect_depth"] = OwnerEffectDepth(player);
+        state["turn_phase"] = combatState?.Phase.ToString() ?? "None";
         state["max_hp"] = creature.MaxHp;
         state["block"] = creature.Block;
 
