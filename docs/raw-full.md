@@ -136,6 +136,7 @@ Always present at the top level (except `menu`). Contains everything about the l
 {
   "character": "The Ironclad",
   "turn_phase": "Play",   // None, Start, AutoPrePlay, Play, AutoPostPlay, End (per player).
+  "block_gains_this_turn": [], // Owner Move Block history: CardPlay identity per entry, null for no CardPlay.
   "effect_depth": 0,       // Active card/potion bodies, including suspended and nested executions.
                             // Read is_resolving for the surrounding animation/settlement window as well.
   "hp": 72,

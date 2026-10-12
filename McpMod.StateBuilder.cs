@@ -1702,6 +1702,7 @@ public static partial class McpMod
         state["hp"] = creature.CurrentHp;
         state["effect_depth"] = OwnerEffectDepth(player);
         state["turn_phase"] = combatState?.Phase.ToString() ?? "None";
+        state["block_gains_this_turn"] = BuildOwnerBlockGains(player);
         state["max_hp"] = creature.MaxHp;
         state["block"] = creature.Block;
 
@@ -2062,6 +2063,26 @@ public static partial class McpMod
             });
         }
         return relics;
+    }
+
+    private sealed class CardPlayIdentity
+    {
+        public readonly long Value = System.Threading.Interlocked.Increment(ref _nextCardPlayIdentity);
+    }
+
+    private static long _nextCardPlayIdentity;
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CardPlay, CardPlayIdentity> CardPlayIdentities = new();
+
+    private static long GetCardPlayIdentity(CardPlay play) => CardPlayIdentities.GetValue(play, _ => new CardPlayIdentity()).Value;
+
+    private static List<long?> BuildOwnerBlockGains(Player player)
+    {
+        var state = player.Creature.CombatState;
+        if (state == null)
+            return new List<long?>();
+        return CombatManager.Instance.History.Entries.OfType<BlockGainedEntry>()
+            .Where(entry => entry.Actor == player.Creature && entry.HappenedThisTurn(state) && entry.Props.IsCardOrMonsterMove())
+            .Select(entry => entry.CardPlay == null ? (long?)null : GetCardPlayIdentity(entry.CardPlay)).ToList();
     }
 
     private static Dictionary<string, object?> BuildRelicRuntimeState(RelicModel relic)
@@ -4177,6 +4198,15 @@ public static partial class McpMod
             return enumValue.ToString();
         if (value is Creature creature)
             return new Dictionary<string, object?> { ["kind"] = "creature", ["combat_id"] = creature.CombatId };
+        if (value is CardPlay cardPlay)
+            return new Dictionary<string, object?>
+            {
+                ["kind"] = "card_play",
+                ["play_id"] = GetCardPlayIdentity(cardPlay),
+                ["card"] = BuildCardInfo(cardPlay.Card),
+                ["play_index"] = cardPlay.PlayIndex,
+                ["play_count"] = cardPlay.PlayCount
+            };
         if (value is CardModel card)
         {
             var cardState = BuildCardInfo(card);
