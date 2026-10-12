@@ -2244,6 +2244,7 @@ public static partial class McpMod
             ["description"] = SafeGetCardDescription(card, pile),
             ["rarity"] = card.Rarity.ToString(),
             ["enchantment"] = card.Enchantment?.GetType().Name,
+            ["enchantment_state"] = BuildEnchantmentState(card),
             ["affliction"] = card.Affliction?.Id.Entry,
             ["has_deck_version"] = card.DeckVersion != null,
             ["is_upgraded"] = card.IsUpgraded,
@@ -2288,6 +2289,20 @@ public static partial class McpMod
         }
         catch { /* immutable/deck cards intentionally have no combat identity */ }
         return info;
+    }
+
+    private static Dictionary<string, object?>? BuildEnchantmentState(CardModel card)
+    {
+        if (card.Enchantment == null) return null;
+        // Match description rendering, including the enchantment's own DynamicVars.
+        using UnpoweredCardVars? scope = UnpoweredValues ? UnpoweredCardVars.Apply(card) : null;
+        var text = card.Enchantment.DynamicExtraCardText?.GetFormattedText();
+        return new Dictionary<string, object?>
+        {
+            ["amount"] = card.Enchantment.Amount,
+            ["status"] = card.Enchantment.Status.ToString(),
+            ["extra_text"] = text == null ? null : CleanCardDescription(text)
+        };
     }
 
     // Canonical values are simulation inputs; description formatting can truncate them.
