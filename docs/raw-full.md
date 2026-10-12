@@ -135,6 +135,8 @@ Always present at the top level (except `menu`). Contains everything about the l
 ```jsonc
 {
   "character": "The Ironclad",
+  "effect_depth": 0,       // Active card/potion bodies, including suspended and nested executions.
+                            // Read is_resolving for the surrounding animation/settlement window as well.
   "hp": 72,
   "max_hp": 80,
   "block": 0,

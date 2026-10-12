@@ -1678,6 +1678,19 @@ public static partial class McpMod
         catch { return false; }
     }
 
+    private static readonly FieldInfo OwnerEffectDepthField = typeof(CombatManager)
+        .GetField("_cardOrPotionEffectDepth", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingFieldException(typeof(CombatManager).FullName, "_cardOrPotionEffectDepth");
+
+    private static int OwnerEffectDepth(Player player)
+    {
+        var depths = OwnerEffectDepthField.GetValue(CombatManager.Instance) as Dictionary<Player, int>
+            ?? throw new InvalidOperationException("CombatManager owner effect depths are unavailable");
+        var depth = depths.TryGetValue(player, out var value) ? value : 0;
+        if (depth < 0) throw new InvalidOperationException("CombatManager owner effect depth is negative");
+        return depth;
+    }
+
     private static Dictionary<string, object?> BuildPlayerState(Player player)
     {
         var state = new Dictionary<string, object?>();
@@ -1687,6 +1700,7 @@ public static partial class McpMod
         state["character"] = SafeGetText(() => player.Character.Title);
         state["combat_id"] = creature.CombatId;
         state["hp"] = creature.CurrentHp;
+        state["effect_depth"] = OwnerEffectDepth(player);
         state["max_hp"] = creature.MaxHp;
         state["block"] = creature.Block;
 
