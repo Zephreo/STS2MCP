@@ -2260,6 +2260,9 @@ public static partial class McpMod
         // entirely, which is the shape every existing consumer already assumes.
         if (UnpoweredValues)
             info["text_baked"] = false;
+        var damageVar = BuildDamageVarState(card);
+        if (damageVar != null)
+            info["damage_var"] = damageVar;
         if (card is MadScience madScience)
         {
             info["mad_science_type"] = madScience.TinkerTimeType.ToString();
@@ -2280,6 +2283,42 @@ public static partial class McpMod
         }
         catch { /* immutable/deck cards intentionally have no combat identity */ }
         return info;
+    }
+
+    // Canonical values are simulation inputs; description formatting can truncate them.
+    private static Dictionary<string, object?>? BuildDamageVarState(CardModel card)
+    {
+        decimal damage;
+        decimal? extra = null;
+        ValueProp props;
+        if (card.DynamicVars.ContainsKey("CalculatedDamage"))
+        {
+            damage = card.DynamicVars.CalculationBase.BaseValue;
+            extra = card.DynamicVars.ExtraDamage.BaseValue;
+            props = card.DynamicVars.CalculatedDamage.Props;
+        }
+        else if (card.DynamicVars.ContainsKey("Damage"))
+        {
+            damage = card.DynamicVars.Damage.BaseValue;
+            props = card.DynamicVars.Damage.Props;
+        }
+        else if (card.DynamicVars.ContainsKey("OstyDamage"))
+        {
+            damage = card.DynamicVars.OstyDamage.BaseValue;
+            props = card.DynamicVars.OstyDamage.Props;
+        }
+        else return null;
+        var additive = card.Enchantment?.EnchantDamageAdditive(damage, props) ?? 0m;
+        var multiplier = card.Enchantment?.EnchantDamageMultiplicative(damage + additive, props) ?? 1m;
+        var state = new Dictionary<string, object?>
+        {
+            ["base"] = damage.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["enchantment_additive"] = additive.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["enchantment_multiplier"] = multiplier.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        };
+        if (extra.HasValue)
+            state["extra"] = extra.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return state;
     }
 
     private static Dictionary<string, object?> BuildCardState(CardModel card, int index)

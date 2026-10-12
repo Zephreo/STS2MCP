@@ -2242,3 +2242,15 @@ In multiplayer, this is a vote. The turn ends only when all players submit.
 Retract the end-turn vote before all players have committed.
 
 All other actions work identically to singleplayer.
+
+## Exact card damage variables
+
+Cards with canonical `Damage`, `OstyDamage`, or `CalculatedDamage` variables include a `damage_var` object. Numeric values are invariant decimal strings, independent of localized or rounded descriptions:
+
+```json
+{"base":"8.5","enchantment_additive":"0","enchantment_multiplier":"2"}
+```
+
+`base` is the canonical value before enchantments and combat hooks. Calculated damage also includes `extra`; calculate `base + extra * current_count` using the card's current state and target. Apply the additive enchantment value, then its multiplier, before global combat modifiers such as Strength and Weak. These enchantment values reflect the current observation.
+
+The field is exported in every shared card context, including Hand, other piles, selections, decks, rewards, and shops. It is present regardless of the description's `values` mode. Cards without these canonical variables omit it.
