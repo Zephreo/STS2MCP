@@ -2263,6 +2263,11 @@ public static partial class McpMod
         var damageVar = BuildDamageVarState(card);
         if (damageVar != null)
             info["damage_var"] = damageVar;
+        // Separate the card's own HP-loss variable from Corrupted's appended text.
+        if (card.Enchantment is MegaCrit.Sts2.Core.Models.Enchantments.Corrupted)
+            info["hp_loss_var"] = card.DynamicVars.ContainsKey("HpLoss")
+                ? card.DynamicVars.HpLoss.BaseValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : null;
         if (card is MadScience madScience)
         {
             info["mad_science_type"] = madScience.TinkerTimeType.ToString();
@@ -2327,6 +2332,8 @@ public static partial class McpMod
         else if (card.Enchantment is MegaCrit.Sts2.Core.Models.Enchantments.Vigorous vigorous
                  && vigorous.Status == MegaCrit.Sts2.Core.Entities.Enchantments.EnchantmentStatus.Normal)
             state["after_play"] = new Dictionary<string, object?> { ["kind"] = "Vigorous" };
+        else if (card.Enchantment is MegaCrit.Sts2.Core.Models.Enchantments.Corrupted)
+            state["after_play"] = new Dictionary<string, object?> { ["kind"] = "Corrupted" };
         return state;
     }
 
