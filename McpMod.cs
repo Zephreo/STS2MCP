@@ -407,21 +407,16 @@ public static partial class McpMod
 
         try
         {
-            var stateTask = RunOnMainThread(() =>
+            var stateTask = RunOnMainThread(() => WithCardValues(unpowered, () =>
             {
-                UnpoweredValues = unpowered;
-                try
-                {
-                    var s = BuildMultiplayerGameState(fullDetail);
-                    s["detail"] = detail;
-                    if (fullDetail)
-                        s["relic_bag_generation"] = RelicBagGeneration;
-                    s["game_version"] = GameVersion();
-                    s["values"] = values;
-                    return s;
-                }
-                finally { UnpoweredValues = false; }
-            });
+                var s = BuildMultiplayerGameState(fullDetail);
+                s["detail"] = detail;
+                if (fullDetail)
+                    s["relic_bag_generation"] = RelicBagGeneration;
+                s["game_version"] = GameVersion();
+                s["values"] = values;
+                return s;
+            }));
             var state = stateTask.GetAwaiter().GetResult();
 
             if (format == "markdown")
@@ -526,18 +521,13 @@ public static partial class McpMod
 
         try
         {
-            var stateTask = RunOnMainThread(() =>
+            var stateTask = RunOnMainThread(() => WithCardValues(unpowered, () =>
             {
-                UnpoweredValues = unpowered;
-                try
-                {
-                    var s = BuildGameState();
-                    s["game_version"] = GameVersion();
-                    s["values"] = values;
-                    return s;
-                }
-                finally { UnpoweredValues = false; }
-            });
+                var s = BuildGameState();
+                s["game_version"] = GameVersion();
+                s["values"] = values;
+                return s;
+            }));
             var state = stateTask.GetAwaiter().GetResult();
 
             if (format == "markdown")
