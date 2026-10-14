@@ -231,7 +231,9 @@ Always present at the top level (except `menu`). Contains everything about the l
   "has_retain_keyword": false,      // exact Keywords.Contains(Retain); survives turn cleanup
   "has_single_turn_retain": false,  // private single-turn grant; cleared after the hand flush
   "should_retain_this_turn": false, // OR of those two fields, for the current flush
-  "is_sly_this_turn": false  // Sly keyword OR a single-turn grant (Hand Trick)
+  "has_sly_keyword": false,        // exact permanent/combat keyword membership
+  "has_single_turn_sly": false,    // Hand Trick grant; cleared after the hand flush
+  "is_sly_this_turn": false        // OR of the two Sly sources
 }
 ```
 
@@ -253,7 +255,10 @@ Always present at the top level (except `menu`). Contains everything about the l
   "combat_card_id": 12,      // stable physical identity for the fight
   "has_retain_keyword": false,
   "has_single_turn_retain": false,
-  "should_retain_this_turn": false // common card fields, present in every pile
+  "should_retain_this_turn": false,
+  "has_sly_keyword": false,
+  "has_single_turn_sly": false,
+  "is_sly_this_turn": false // common card fields, present in every pile
 }
 ```
 

@@ -2293,7 +2293,10 @@ public static partial class McpMod
             ["keyword_ids"] = BuildKeywordIds(card),
             ["has_retain_keyword"] = card.Keywords.Contains(CardKeyword.Retain),
             ["has_single_turn_retain"] = GetSingleTurnRetain(card),
-            ["should_retain_this_turn"] = card.ShouldRetainThisTurn
+            ["should_retain_this_turn"] = card.ShouldRetainThisTurn,
+            ["has_sly_keyword"] = card.Keywords.Contains(CardKeyword.Sly),
+            ["has_single_turn_sly"] = GetSingleTurnSly(card),
+            ["is_sly_this_turn"] = card.IsSlyThisTurn
         };
         // Only present, and only false, when this build stripped the game's power
         // and relic baking out of the numbers above. A powered payload omits the key
@@ -2395,6 +2398,17 @@ public static partial class McpMod
         typeof(CardModel).GetField("_hasSingleTurnRetain", BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new MissingFieldException(typeof(CardModel).FullName, "_hasSingleTurnRetain");
 
+    private static readonly FieldInfo SingleTurnSlyField =
+        typeof(CardModel).GetField("_hasSingleTurnSly", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingFieldException(typeof(CardModel).FullName, "_hasSingleTurnSly");
+
+    private static bool GetSingleTurnSly(CardModel card)
+    {
+        if (SingleTurnSlyField.GetValue(card) is not bool temporarySly)
+            throw new InvalidOperationException("CardModel._hasSingleTurnSly has an unsupported shape.");
+        return temporarySly;
+    }
+
     private static bool GetSingleTurnRetain(CardModel card)
     {
         // A positive predicate cannot reveal which part survives cleanup.
@@ -2414,9 +2428,6 @@ public static partial class McpMod
         state["target_type"] = card.TargetType.ToString();
         state["can_play"] = unplayableReason == UnplayableReason.None;
         state["unplayable_reason"] = unplayableReason != UnplayableReason.None ? unplayableReason.ToString() : null;
-        // Hand Trick's temporary Sly grant is absent from keyword membership.
-        try { state["is_sly_this_turn"] = card.IsSlyThisTurn; }
-        catch { }
         return state;
     }
 
