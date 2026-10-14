@@ -1553,6 +1553,7 @@ public static partial class McpMod
             return battle;
         }
 
+        battle["next_creature_id"] = NextCreatureId(combatState);
         battle["round"] = combatState.RoundNumber;
         battle["turn"] = combatState.CurrentSide.ToString().ToLower();
         battle["is_play_phase"] = IsPlayPhase(combatState);
@@ -1677,6 +1678,15 @@ public static partial class McpMod
         }
         catch { return false; }
     }
+
+    private static readonly FieldInfo NextCreatureIdField = typeof(CombatState)
+        .GetField("_nextCreatureId", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingFieldException(typeof(CombatState).FullName, "_nextCreatureId");
+
+    private static uint NextCreatureId(object combatState) =>
+        NextCreatureIdField.GetValue(combatState) is uint value
+            ? value
+            : throw new InvalidOperationException("CombatState next creature identity is unavailable");
 
     private static readonly FieldInfo OwnerEffectDepthField = typeof(CombatManager)
         .GetField("_cardOrPotionEffectDepth", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -4285,6 +4295,7 @@ public static partial class McpMod
             pets.Add(new Dictionary<string, object?>
             {
                 ["id"] = osty.Monster?.Id.Entry ?? "OSTY",
+                ["combat_id"] = osty.CombatId,
                 ["name"] = SafeGetText(() => osty.Monster?.Title) ?? "Otsy",
                 ["alive"] = osty.IsAlive,
                 ["hp"] = osty.CurrentHp,

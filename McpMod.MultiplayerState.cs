@@ -321,6 +321,7 @@ public static partial class McpMod
             return battle;
         }
 
+        battle["next_creature_id"] = NextCreatureId(combatState);
         battle["round"] = combatState.RoundNumber;
         battle["turn"] = combatState.CurrentSide.ToString().ToLower();
         battle["is_play_phase"] = IsPlayPhase(combatState);
