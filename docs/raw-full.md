@@ -228,8 +228,9 @@ Always present at the top level (except `menu`). Contains everything about the l
   "keywords": [ /* Keyword Objects */ ],   // localized hover tips — DISPLAY TEXT, don't match on it
   "keyword_ids": ["Exhaust"],              // machine-readable CardKeyword names; use these
   "combat_card_id": 12,      // stable physical identity for the fight; tells two copies of Strike apart
-  "should_retain_this_turn": false,  // Retain keyword OR a single-turn grant (Well-Laid Plans). The only way
-                                     //   to tell a card kept in hand from one the end-of-turn flush will discard.
+  "has_retain_keyword": false,      // exact Keywords.Contains(Retain); survives turn cleanup
+  "has_single_turn_retain": false,  // private single-turn grant; cleared after the hand flush
+  "should_retain_this_turn": false, // OR of those two fields, for the current flush
   "is_sly_this_turn": false  // Sly keyword OR a single-turn grant (Hand Trick)
 }
 ```
@@ -249,7 +250,10 @@ Always present at the top level (except `menu`). Contains everything about the l
   "target_type": "AnyEnemy", // None, Self, AnyEnemy, AllEnemies, etc.
   "keywords": [ /* Keyword Objects */ ],   // localized hover tips — DISPLAY TEXT, don't match on it
   "keyword_ids": ["Exhaust"],              // machine-readable CardKeyword names; use these
-  "combat_card_id": 12       // stable physical identity for the fight
+  "combat_card_id": 12,      // stable physical identity for the fight
+  "has_retain_keyword": false,
+  "has_single_turn_retain": false,
+  "should_retain_this_turn": false // common card fields, present in every pile
 }
 ```
 

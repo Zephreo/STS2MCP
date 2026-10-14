@@ -2290,7 +2290,10 @@ public static partial class McpMod
             // Machine-readable CardKeyword names beside the localized hover tips
             // above. `keywords` is display text and cannot be matched against
             // reliably; this is what a client tests for Sly/Ethereal/Retain.
-            ["keyword_ids"] = BuildKeywordIds(card)
+            ["keyword_ids"] = BuildKeywordIds(card),
+            ["has_retain_keyword"] = card.Keywords.Contains(CardKeyword.Retain),
+            ["has_single_turn_retain"] = GetSingleTurnRetain(card),
+            ["should_retain_this_turn"] = card.ShouldRetainThisTurn
         };
         // Only present, and only false, when this build stripped the game's power
         // and relic baking out of the numbers above. A powered payload omits the key
@@ -2388,6 +2391,19 @@ public static partial class McpMod
         return state;
     }
 
+    private static readonly FieldInfo SingleTurnRetainField =
+        typeof(CardModel).GetField("_hasSingleTurnRetain", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingFieldException(typeof(CardModel).FullName, "_hasSingleTurnRetain");
+
+    private static bool GetSingleTurnRetain(CardModel card)
+    {
+        // A positive predicate cannot reveal which part survives cleanup.
+        // Missing or unsupported private state must refuse publication.
+        if (SingleTurnRetainField.GetValue(card) is not bool temporaryRetain)
+            throw new InvalidOperationException("CardModel._hasSingleTurnRetain has an unsupported shape.");
+        return temporaryRetain;
+    }
+
     private static Dictionary<string, object?> BuildCardState(CardModel card, int index)
     {
         card.CanPlay(out var unplayableReason, out _);
@@ -2398,13 +2414,7 @@ public static partial class McpMod
         state["target_type"] = card.TargetType.ToString();
         state["can_play"] = unplayableReason == UnplayableReason.None;
         state["unplayable_reason"] = unplayableReason != UnplayableReason.None ? unplayableReason.ToString() : null;
-        // The game's own predicates, including single-turn grants (Well-Laid
-        // Plans, Hand Trick) that the keyword list alone would miss. Retain is
-        // the only way to tell a card deliberately kept in hand from one the
-        // end-of-turn flush is about to sweep into the discard pile, and that
-        // flush writes nothing to the combat history to read instead.
-        try { state["should_retain_this_turn"] = card.ShouldRetainThisTurn; }
-        catch { }
+        // Hand Trick's temporary Sly grant is absent from keyword membership.
         try { state["is_sly_this_turn"] = card.IsSlyThisTurn; }
         catch { }
         return state;
