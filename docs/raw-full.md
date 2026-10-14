@@ -233,7 +233,8 @@ Always present at the top level (except `menu`). Contains everything about the l
   "should_retain_this_turn": false, // OR of those two fields, for the current flush
   "has_sly_keyword": false,        // exact permanent/combat keyword membership
   "has_single_turn_sly": false,    // Hand Trick grant; cleared after the hand flush
-  "is_sly_this_turn": false        // OR of the two Sly sources
+  "is_sly_this_turn": false,       // OR of the two Sly sources
+  "exhaust_on_next_play": false    // one-shot flag, separate from the Exhaust keyword
 }
 ```
 
@@ -258,7 +259,8 @@ Always present at the top level (except `menu`). Contains everything about the l
   "should_retain_this_turn": false,
   "has_sly_keyword": false,
   "has_single_turn_sly": false,
-  "is_sly_this_turn": false // common card fields, present in every pile
+  "is_sly_this_turn": false,
+  "exhaust_on_next_play": false // common card fields, present in every pile
 }
 ```
 

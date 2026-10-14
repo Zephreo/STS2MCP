@@ -2285,6 +2285,7 @@ public static partial class McpMod
             ["has_deck_version"] = card.DeckVersion != null,
             ["is_upgraded"] = card.IsUpgraded,
             ["base_replay_count"] = card.BaseReplayCount,
+            ["exhaust_on_next_play"] = card.ExhaustOnNextPlay,
             ["tags"] = card.Tags.Select(tag => tag.ToString()).ToArray(),
             ["keywords"] = BuildHoverTips(card.HoverTips),
             // Machine-readable CardKeyword names beside the localized hover tips
