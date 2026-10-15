@@ -2539,6 +2539,7 @@ public static partial class McpMod
             // alive, so a client that ignores this reads exactly what it read
             // before.
             ["is_alive"] = creature.IsAlive,
+            ["is_performing_move"] = monster?.IsPerformingMove ?? false,
             ["block"] = creature.Block,
             ["status"] = BuildPowersState(creature)
         };
