@@ -64,8 +64,8 @@ value pipeline:
 - The enchantment and affliction text lines, and the replay-count line.
 - `cost` / `star_cost`, which stay hook-modified: a relic that makes a card free
   still reports `0`.
-- Orb `passive_val` / `evoke_val`, which bake Focus inside the orb model rather
-  than through a hook.
+- Orb `passive_val` / `evoke_val`, which use the orb model's current Focus and
+  relic hooks. Glass also exports its stored `base_passive_val` before those hooks.
 - Intent `title` / `description` hover text, which still carries the powered
   damage number in its wording.
 
@@ -265,6 +265,10 @@ Always present at the top level (except `menu`). Contains everything about the l
 ```
 
 ### Orb Object
+
+`passive_val` and `evoke_val` include current Focus and relic modifiers. Glass
+also includes `base_passive_val`, its stored passive amount before Focus. This
+field preserves the value hidden when negative Focus clamps the preview to zero.
 
 ```jsonc
 {

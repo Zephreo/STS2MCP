@@ -2233,6 +2233,10 @@ public static partial class McpMod
         return null;
     }
 
+    private static readonly FieldInfo GlassOrbPassiveValueField = typeof(GlassOrb)
+        .GetField("_passiveVal", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new MissingFieldException(typeof(GlassOrb).FullName, "_passiveVal");
+
     // Writes "orbs"/"orb_slots"/"orb_empty_slots" into `state` for a player's
     // orb queue (Defect). Shared by the local player (BuildPlayerState) and the
     // teammate reveal (BuildAllPlayersState) so orb serialization stays in sync.
@@ -2257,7 +2261,7 @@ public static partial class McpMod
                 desc.Add("Evoke", orb.EvokeVal);
                 return desc;
             });
-            orbs.Add(new Dictionary<string, object?>
+            var info = new Dictionary<string, object?>
             {
                 ["id"] = orb.Id.Entry,
                 ["name"] = SafeGetText(() => orb.Title),
@@ -2265,7 +2269,16 @@ public static partial class McpMod
                 ["passive_val"] = orb.PassiveVal,
                 ["evoke_val"] = orb.EvokeVal,
                 ["keywords"] = BuildHoverTips(orb.HoverTips)
-            });
+            };
+            if (orb is GlassOrb)
+            {
+                // Focus clamps PassiveVal at zero, so its preview cannot
+                // recover the orb's stored value when Focus later changes.
+                info["base_passive_val"] = GlassOrbPassiveValueField.GetValue(orb) is decimal value
+                    ? value
+                    : throw new InvalidOperationException("GlassOrb stored passive value is unavailable");
+            }
+            orbs.Add(info);
         }
         state["orbs"] = orbs;
         state["orb_slots"] = orbQueue.Capacity;
