@@ -72,6 +72,10 @@ public static partial class McpMod
     {
         try
         {
+            // Synthetic stuns share an ID while carrying different callbacks.
+            // An empty Whistle stun must not cache away Bowlbug's Dizzy body.
+            if (move.Id == "STUNNED")
+                return ScanMoveEffects(monster, move);
             // Amounts are read off the live monster, so a scan is only reusable
             // within the combat it was taken in: ascension-scaled stat getters
             // and the run's player count both differ between runs, and the
@@ -436,6 +440,38 @@ public static partial class McpMod
         return fx.Count == 0 ? null : fx;
     }
 
+    /// <summary>Follows only delegate captures to identify a wrapped move callback.</summary>
+    private static bool MoveCalls(MoveState move, string ownerType, string methodName)
+    {
+        if (_moveOnPerformField?.GetValue(move) is not Delegate body)
+            return false;
+        var pending = new Stack<Delegate>();
+        var visited = new HashSet<Delegate>();
+        pending.Push(body);
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            if (!visited.Add(current))
+                continue;
+            if (current.Method.DeclaringType?.Name == ownerType && current.Method.Name == methodName)
+                return true;
+            foreach (var entry in current.GetInvocationList())
+            {
+                if (entry != current)
+                    pending.Push(entry);
+            }
+            if (current.Target == null)
+                continue;
+            foreach (var field in current.Target.GetType().GetFields(
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+            {
+                if (typeof(Delegate).IsAssignableFrom(field.FieldType) && field.GetValue(current.Target) is Delegate nested)
+                    pending.Push(nested);
+            }
+        }
+        return false;
+    }
+
     /// <summary>Exports mechanics whose meaning spans multiple move executions.</summary>
     /// <remarks>
     /// The linear command scan deliberately reports one execution only. These
@@ -450,6 +486,13 @@ public static partial class McpMod
         Dictionary<string, object?> fx)
     {
         string monsterName = monster.GetType().Name;
+        if (monsterName == "BowlbugRock" && MoveCalls(move, "BowlbugRock", "DizzyMove"))
+        {
+            fx["removes"] = new[]
+            {
+                new Dictionary<string, object?> { ["power"] = "IMBALANCED_STUN", ["target"] = "self" },
+            };
+        }
         switch ((monsterName, move.Id))
         {
             case ("Aeonglass", "INCREASING_INTENSITY_MOVE"):

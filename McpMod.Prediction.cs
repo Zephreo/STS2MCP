@@ -119,6 +119,8 @@ public static partial class McpMod
                     ["call_for_backup_count"] = ReadMonsterInt(monster, "CallForBackupCount"),
                 };
             }
+            if (monster is MegaCrit.Sts2.Core.Models.Monsters.BowlbugRock bowlbug)
+                result["bowlbug_off_balance"] = bowlbug.IsOffBalance;
             if (rngCoords.TryGetValue("seed", out var seed))
                 result["rng_seed"] = seed;
             if (rngCoords.TryGetValue("state", out var rngState))

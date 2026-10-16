@@ -413,8 +413,8 @@ public static partial class McpMod
         }
 
         // BowlbugRock.IsOffBalance is set by ImbalancedPower when the owner's
-        // own attack is fully blocked, which the consumer already tracks as the
-        // pending Imbalanced stun.
+        // own attack is fully blocked. The consumer stores this private flag
+        // under a reserved scratch ID until the Dizzy callback clears it.
         if (scan.Reads("BowlbugRock.get_IsOffBalance"))
             return Negate(Condition("owner_power", ("power_id", "IMBALANCED_STUN")), negated);
 

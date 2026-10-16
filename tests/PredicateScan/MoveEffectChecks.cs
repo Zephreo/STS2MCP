@@ -98,6 +98,18 @@ namespace STS2_MCP
         {
             Console.WriteLine();
 
+            var bowlbug = new BowlbugRock();
+            var emptyStun = new MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine.MoveState(
+                BowlbugRock.Wrap(_ => System.Threading.Tasks.Task.CompletedTask), "STUNNED");
+            var dizzyStun = new MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine.MoveState(
+                BowlbugRock.Wrap(bowlbug.DizzyMove), "STUNNED");
+            Check("empty stun carries no Dizzy removal", GetMoveEffects(bowlbug, emptyStun) == null, true);
+            var dizzyFx = GetMoveEffects(bowlbug, dizzyStun)!;
+            var dizzyRemoves = (Dictionary<string, object?>[])dizzyFx["removes"]!;
+            Check("wrapped Dizzy clears off-balance", dizzyRemoves[0]["power"], "IMBALANCED_STUN");
+            Check("wrapped Dizzy clears own flag", dizzyRemoves[0]["target"], "self");
+            Check("later empty stun stays empty", GetMoveEffects(bowlbug, emptyStun) == null, true);
+
             // Every way the game reaches a Decimal amount.
             CheckApply("stat getter", nameof(MoveBodies.StatGetterAmount), 0, "StrengthPower", "self", 3);
             CheckApply("1m literal", nameof(MoveBodies.OneLiteralAmount), 0, "WeakPower", "player", 1);

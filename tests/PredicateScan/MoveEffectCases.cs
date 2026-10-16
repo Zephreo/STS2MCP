@@ -393,3 +393,15 @@ public class CombatStateStub
     /// <summary>The player side, which is what `Rocket.TargetingReticleMove` buffs.</summary>
     public IReadOnlyList<Creature> GetOpponentsOf(Creature creature) => Array.Empty<Creature>();
 }
+
+/// <summary>Reproduces the wrapped callback passed by CreatureCmd.Stun.</summary>
+public class BowlbugRock : MegaCrit.Sts2.Core.Models.MonsterModel
+{
+    public Task DizzyMove(IReadOnlyList<Creature> targets) => Task.CompletedTask;
+
+    public static Func<IReadOnlyList<Creature>, Task> Wrap(Func<IReadOnlyList<Creature>, Task> stunMove)
+    {
+        return Wrapper;
+        async Task Wrapper(IReadOnlyList<Creature> targets) => await stunMove(targets);
+    }
+}
