@@ -28,6 +28,8 @@ public static partial class McpMod
         typeof(MonsterMoveStateMachine).GetField("_currentState", BindingFlags.NonPublic | BindingFlags.Instance);
     private static readonly FieldInfo? _msmInitialStateField =
         typeof(MonsterMoveStateMachine).GetField("_initialState", BindingFlags.NonPublic | BindingFlags.Instance);
+    private static readonly FieldInfo? _msmPerformedFirstMoveField =
+        typeof(MonsterMoveStateMachine).GetField("_performedFirstMove", BindingFlags.NonPublic | BindingFlags.Instance);
     private static readonly PropertyInfo? _conditionalStatesProperty =
         typeof(ConditionalBranchState).GetProperty("States", BindingFlags.NonPublic | BindingFlags.Instance);
 
@@ -43,6 +45,8 @@ public static partial class McpMod
             var current = _msmCurrentStateField?.GetValue(machine) as MonsterState;
             var initial = _msmInitialStateField?.GetValue(machine) as MonsterState;
             if (monster == null || machine == null || current == null || initial == null)
+                return null;
+            if (_msmPerformedFirstMoveField?.GetValue(machine) is not bool performedFirstMove)
                 return null;
 
             var states = new List<Dictionary<string, object?>>();
@@ -96,6 +100,8 @@ public static partial class McpMod
             {
                 ["initial_state"] = initial.Id,
                 ["current_state"] = current.Id,
+                ["can_transition_away"] = current.CanTransitionAway,
+                ["performed_first_move"] = performedFirstMove,
                 ["state_log"] = stateLog,
                 ["rng_counter"] = rngCoords["counter"],
                 ["conditional_values_are_snapshots"] = hasConditionalSnapshots,
@@ -135,6 +141,7 @@ public static partial class McpMod
             ["id"] = move.Id,
             ["kind"] = "move",
             ["follow_up"] = move.FollowUpState?.Id ?? move.FollowUpStateId,
+            ["must_perform_once_before_transitioning"] = move.MustPerformOnceBeforeTransitioning,
             ["intents"] = BuildIntentList(move.Intents, creature),
         };
         var effects = GetMoveEffects(monster, move);
