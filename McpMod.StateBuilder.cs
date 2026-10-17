@@ -1747,6 +1747,11 @@ public static partial class McpMod
             state["energy"] = combatState.Energy;
             state["max_energy"] = combatState.MaxEnergy;
 
+            // This required history has a different predicate and lifetime
+            // from Spite's actual HP loss during the current side's turn.
+            state["damage_not_fully_blocked_this_owner_turn"] = DamageNotFullyBlockedThisOwnerTurn(
+                player, CombatManager.Instance.History.Entries.OfType<DamageReceivedEntry>());
+
             // Card models query combat history directly for these conditions.
             // Export the owner-scoped values so the native forward model can
             // seed an exact mid-turn search instead of inferring from HP/piles.

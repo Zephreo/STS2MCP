@@ -162,6 +162,11 @@ Always present at the top level (except `menu`). Contains everything about the l
                                    //   Added in 0.5.4; omitted by older builds, which clients should read as 0.
   "unblocked_hits_taken_this_combat": 3,  // Times this player took unblocked damage THIS COMBAT (Tear Asunder). A count of
                                    //   events, not HP lost; a fully blocked hit does not count. Added in 0.5.4.
+  "damage_not_fully_blocked_this_owner_turn": true,  // Whether this player received damage that was NOT fully blocked
+                                   //   during their current owner turn, enemy side included (Emotion Chip's
+                                   //   HappenedLastPlayerTurn query at the next turn start). Unlike lost_hp_this_turn it is
+                                   //   true when Buffer, Tungsten Rod or Osty prevented the HP loss, and for unblockable
+                                   //   damage. Also on teammate entries in "players". Omitted when the history is unavailable.
   "exhausted_this_turn": true,     // true if any of this player's cards exhausted this turn (Forgotten Ritual)
   "hand_will_flush": true,         // whether the end-of-turn flush will run at all. A hook can suppress it, in which
                                    //   case the WHOLE hand is kept and no card left in it is headed for the discard pile.

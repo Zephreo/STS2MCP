@@ -823,6 +823,16 @@ public static partial class McpMod
                                 entry["max_energy"] = cs.MaxEnergy;
                             }
                             catch { /* energy hooks threw — omit energy only */ }
+
+                            // Emotion Chip's owner-turn history, as for the local
+                            // player. Isolated so a missing history omits only
+                            // this field, which the planner then reports.
+                            try
+                            {
+                                entry["damage_not_fully_blocked_this_owner_turn"] = DamageNotFullyBlockedThisOwnerTurn(
+                                    player, CombatManager.Instance.History.Entries.OfType<DamageReceivedEntry>());
+                            }
+                            catch { /* owner-turn history unavailable — omit it only */ }
                         }
                     }
                     catch { /* teammate combat state mid-transition — omit hand */ }
